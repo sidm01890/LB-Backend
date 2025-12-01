@@ -76,6 +76,28 @@ class Settings(BaseSettings):
     redis_port: int = 6379
     redis_db: int = 0
     
+    # MongoDB Configuration (Local Development)
+    mongo_host: str = "localhost"
+    mongo_port: int = 27017
+    mongo_database: str = "devyani_mongo"
+    mongo_username: Optional[str] = None
+    mongo_password: Optional[str] = None
+    mongo_auth_source: str = "admin"  # Authentication database
+    
+    # Production MongoDB Configuration (if using MongoDB Atlas or remote)
+    production_mongo_host: Optional[str] = None
+    production_mongo_port: int = 27017
+    production_mongo_database: Optional[str] = None
+    production_mongo_username: Optional[str] = None
+    production_mongo_password: Optional[str] = None
+    production_mongo_auth_source: str = "admin"
+    
+    # MongoDB Connection Pool Settings
+    mongo_max_pool_size: int = 50
+    mongo_min_pool_size: int = 10
+    mongo_max_idle_time_ms: int = 45000
+    mongo_server_selection_timeout_ms: int = 5000
+    
     # Task Executor Configuration (for parallel processing)
     task_executor_workers: int = 10  # Number of worker threads for background tasks
     
@@ -139,6 +161,50 @@ def get_database_urls():
         )
     
     return sso_url, main_url
+
+
+def get_mongodb_connection_string() -> str:
+    """Get MongoDB connection string based on environment"""
+    if settings.environment == "production" and settings.production_mongo_host:
+        # Production: Use production MongoDB settings
+        if settings.production_mongo_username and settings.production_mongo_password:
+            username = quote_plus(settings.production_mongo_username)
+            password = quote_plus(settings.production_mongo_password)
+            connection_string = (
+                f"mongodb://{username}:{password}"
+                f"@{settings.production_mongo_host}:{settings.production_mongo_port}/"
+                f"{settings.production_mongo_database}?authSource={settings.production_mongo_auth_source}"
+            )
+        else:
+            connection_string = (
+                f"mongodb://{settings.production_mongo_host}:{settings.production_mongo_port}/"
+                f"{settings.production_mongo_database}"
+            )
+    else:
+        # Development/Staging: Use local MongoDB
+        if settings.mongo_username and settings.mongo_password:
+            username = quote_plus(settings.mongo_username)
+            password = quote_plus(settings.mongo_password)
+            connection_string = (
+                f"mongodb://{username}:{password}"
+                f"@{settings.mongo_host}:{settings.mongo_port}/"
+                f"{settings.mongo_database}?authSource={settings.mongo_auth_source}"
+            )
+        else:
+            # Local MongoDB without authentication (default for development)
+            connection_string = (
+                f"mongodb://{settings.mongo_host}:{settings.mongo_port}/"
+                f"{settings.mongo_database}"
+            )
+    
+    return connection_string
+
+
+def get_mongodb_database_name() -> str:
+    """Get MongoDB database name based on environment"""
+    if settings.environment == "production" and settings.production_mongo_database:
+        return settings.production_mongo_database
+    return settings.mongo_database
 
 
 def validate_environment() -> None:
