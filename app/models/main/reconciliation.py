@@ -513,3 +513,121 @@ class PosVsTrmSummary(Base):
         except Exception as e:
             logger.error(f"Error getting all pos_vs_trm_summary: {e}")
             return []
+
+
+class DailySalesSummary(Base):
+    """Daily Sales Summary model - Pre-calculated sales data for fast dashboard queries"""
+    __tablename__ = "daily_sales_summary"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    
+    # Date dimension
+    sales_date = Column(Date, nullable=False, index=True)
+    
+    # Foreign Keys for filtering
+    store_code = Column(String(50), nullable=False, index=True)
+    city_id = Column(String(50), nullable=True, index=True)
+    zone = Column(String(100), nullable=True, index=True)
+    
+    # In-Store Sales (from orders table)
+    instore_cash = Column(Numeric(15, 2), default=0)
+    instore_card = Column(Numeric(15, 2), default=0)
+    instore_upi = Column(Numeric(15, 2), default=0)
+    instore_other = Column(Numeric(15, 2), default=0)  # INSTORE category
+    instore_total = Column(Numeric(15, 2), default=0)
+    instore_count = Column(Integer, default=0)
+    
+    # Aggregator Sales (from orders table - quick totals)
+    aggregator_zomato = Column(Numeric(15, 2), default=0)
+    aggregator_swiggy = Column(Numeric(15, 2), default=0)
+    aggregator_magicpin = Column(Numeric(15, 2), default=0)
+    aggregator_total = Column(Numeric(15, 2), default=0)
+    aggregator_count = Column(Integer, default=0)
+    
+    # Zomato Calculated Values (from zomato table with formula)
+    zomato_net_amount = Column(Numeric(15, 2), default=0)  # Using formula: net_amount OR (bill_subtotal - mvd + merchant_pack_charge)
+    zomato_calculated_amount = Column(Numeric(15, 2), default=0)  # Always: bill_subtotal - mvd + merchant_pack_charge
+    zomato_final_amount = Column(Numeric(15, 2), default=0)
+    zomato_order_count = Column(Integer, default=0)
+    
+    # Grand Totals
+    total_sales = Column(Numeric(15, 2), default=0)  # instore_total + aggregator_total
+    total_order_count = Column(Integer, default=0)
+    
+    # Metadata
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    __table_args__ = (
+        Index('idx_sales_date', 'sales_date'),
+        Index('idx_store_code', 'store_code'),
+        Index('idx_city_id', 'city_id'),
+        Index('idx_zone', 'zone'),
+        Index('idx_date_city', 'sales_date', 'city_id'),
+        Index('idx_date_store', 'sales_date', 'store_code'),
+    )
+    
+    @classmethod
+    async def create(cls, db: AsyncSession, **kwargs):
+        """Create a new record"""
+        try:
+            record = cls(**kwargs)
+            db.add(record)
+            await db.commit()
+            await db.refresh(record)
+            return record
+        except Exception as e:
+            await db.rollback()
+            logger.error(f"Error creating daily_sales_summary: {e}")
+            raise
+    
+    @classmethod
+    async def get_by_date_range(cls, db: AsyncSession, start_date: str, end_date: str, 
+                                 store_codes: List[str] = None, city_ids: List[str] = None):
+        """Get records by date range with optional filters"""
+        try:
+            query = select(cls).where(
+                cls.sales_date >= start_date
+            ).where(
+                cls.sales_date <= end_date
+            )
+            if store_codes:
+                query = query.where(cls.store_code.in_(store_codes))
+            if city_ids:
+                query = query.where(cls.city_id.in_(city_ids))
+            query = query.order_by(cls.sales_date.asc(), cls.store_code.asc())
+            
+            result = await db.execute(query)
+            return result.scalars().all()
+        except Exception as e:
+            logger.error(f"Error getting daily_sales_summary by date range: {e}")
+            return []
+    
+    def to_dict(self):
+        """Convert record to dictionary"""
+        return {
+            "id": self.id,
+            "sales_date": self.sales_date.isoformat() if self.sales_date else None,
+            "store_code": self.store_code,
+            "city_id": self.city_id,
+            "zone": self.zone,
+            "instore_cash": float(self.instore_cash) if self.instore_cash else 0,
+            "instore_card": float(self.instore_card) if self.instore_card else 0,
+            "instore_upi": float(self.instore_upi) if self.instore_upi else 0,
+            "instore_other": float(self.instore_other) if self.instore_other else 0,
+            "instore_total": float(self.instore_total) if self.instore_total else 0,
+            "instore_count": self.instore_count or 0,
+            "aggregator_zomato": float(self.aggregator_zomato) if self.aggregator_zomato else 0,
+            "aggregator_swiggy": float(self.aggregator_swiggy) if self.aggregator_swiggy else 0,
+            "aggregator_magicpin": float(self.aggregator_magicpin) if self.aggregator_magicpin else 0,
+            "aggregator_total": float(self.aggregator_total) if self.aggregator_total else 0,
+            "aggregator_count": self.aggregator_count or 0,
+            "zomato_net_amount": float(self.zomato_net_amount) if self.zomato_net_amount else 0,
+            "zomato_calculated_amount": float(self.zomato_calculated_amount) if self.zomato_calculated_amount else 0,
+            "zomato_final_amount": float(self.zomato_final_amount) if self.zomato_final_amount else 0,
+            "zomato_order_count": self.zomato_order_count or 0,
+            "total_sales": float(self.total_sales) if self.total_sales else 0,
+            "total_order_count": self.total_order_count or 0,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None
+        }

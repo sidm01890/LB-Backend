@@ -14,6 +14,7 @@ from app.config.executor import create_task_executor, shutdown_task_executor
 from app.config.settings import settings, validate_environment
 from app.workers.tasks import run_scheduled_tasks
 from app.workers.formula_watcher import start_formula_watcher, stop_formula_watcher
+from app.workers.daily_sales_scheduler import start_daily_sales_scheduler, stop_daily_sales_scheduler
 
 # Configure logging
 logging.basicConfig(
@@ -96,6 +97,9 @@ async def startup_event():
         # Start formula watcher scheduler
         await start_formula_watcher()
         
+        # Start daily sales summary scheduler (runs every 10 seconds)
+        await start_daily_sales_scheduler()
+        
         logger.info("✅ Database connections established successfully")
         logger.info("✅ Task executor initialized for parallel processing")
         logger.info("✅ Application startup completed")
@@ -118,6 +122,9 @@ async def shutdown_event():
 
         # Stop formula watcher
         await stop_formula_watcher()
+        
+        # Stop daily sales scheduler
+        await stop_daily_sales_scheduler()
         
         # Close database connections
         await close_connections()

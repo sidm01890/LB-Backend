@@ -6691,3 +6691,427 @@ async def generate_summary_sheet_sync(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error generating summary sheet: {str(e)}"
         )
+
+
+# ============================================================================
+# DAILY SALES SUMMARY APIs
+# ============================================================================
+
+class PopulateDailySalesRequest(BaseModel):
+    """Request model for populating daily sales summary"""
+    model_config = ConfigDict(populate_by_name=True)
+    
+    start_date: Optional[str] = Field(None, alias="startDate")
+    end_date: Optional[str] = Field(None, alias="endDate")
+    # If not provided, will process last 7 days
+
+
+class DashboardSalesRequest(BaseModel):
+    """Request model for dashboard sales query"""
+    model_config = ConfigDict(populate_by_name=True)
+    
+    start_date: str = Field(..., alias="startDate")
+    end_date: str = Field(..., alias="endDate")
+    stores: Optional[List[str]] = None
+    cities: Optional[List[str]] = None
+
+
+@router.post("/populate-daily-sales-summary")
+async def populate_daily_sales_summary(
+    request_data: PopulateDailySalesRequest = PopulateDailySalesRequest(),
+    db: AsyncSession = Depends(get_main_db),
+    current_user: UserDetails = Depends(get_current_user)
+):
+    """
+    Populate daily_sales_summary table from orders and zomato tables
+    This calculates and stores pre-computed sales data for fast dashboard queries
+    """
+    try:
+        from datetime import datetime, timedelta, date
+        from decimal import Decimal
+        
+        logger.info("===========================================")
+        logger.info("🚀 /populate-daily-sales-summary API IS HIT")
+        logger.info("===========================================")
+        
+        # Determine date range
+        if request_data.start_date and request_data.end_date:
+            start_date = datetime.strptime(request_data.start_date, "%Y-%m-%d").date()
+            end_date = datetime.strptime(request_data.end_date, "%Y-%m-%d").date()
+        else:
+            # Default: last 7 days
+            end_date = date.today()
+            start_date = end_date - timedelta(days=7)
+        
+        logger.info(f"📅 Processing date range: {start_date} to {end_date}")
+        
+        # Step 1: Get all unique store+date combinations from orders table
+        logger.info("📍 Step 1: Getting unique store+date combinations from orders...")
+        unique_stores_dates_query = text("""
+            SELECT DISTINCT 
+                date AS sales_date,
+                store_name AS store_code
+            FROM orders
+            WHERE date BETWEEN :start_date AND :end_date
+            ORDER BY date, store_name
+        """)
+        result = await db.execute(unique_stores_dates_query, {
+            "start_date": start_date,
+            "end_date": end_date
+        })
+        store_date_combos = result.fetchall()
+        logger.info(f"📊 Found {len(store_date_combos)} unique store+date combinations")
+        
+        # Step 2: Get store metadata (city_id, zone) from devyani_stores
+        logger.info("📍 Step 2: Fetching store metadata...")
+        store_codes = list(set([row.store_code for row in store_date_combos]))
+        if not store_codes:
+            return {
+                "success": True,
+                "message": "No data found for the specified date range",
+                "records_processed": 0
+            }
+        
+        store_placeholders = ",".join([f":store_{i}" for i in range(len(store_codes))])
+        store_params = {f"store_{i}": code for i, code in enumerate(store_codes)}
+        
+        store_metadata_query = text(f"""
+            SELECT store_code, city_id, zone
+            FROM devyani_stores
+            WHERE store_code IN ({store_placeholders})
+        """)
+        store_metadata_result = await db.execute(store_metadata_query, store_params)
+        store_metadata = {row.store_code: {"city_id": row.city_id, "zone": row.zone} 
+                         for row in store_metadata_result.fetchall()}
+        logger.info(f"📊 Found metadata for {len(store_metadata)} stores")
+        
+        # Step 3: Calculate In-Store Sales from orders table
+        logger.info("📍 Step 3: Calculating In-Store Sales from orders table...")
+        instore_placeholders = ",".join([f":store_{i}" for i in range(len(store_codes))])
+        instore_query = text(f"""
+            SELECT 
+                date AS sales_date,
+                store_name AS store_code,
+                SUM(CASE WHEN UPPER(TRIM(online_order_taker)) = 'CASH' THEN COALESCE(payment, 0) ELSE 0 END) AS instore_cash,
+                SUM(CASE WHEN UPPER(TRIM(online_order_taker)) = 'CARD' THEN COALESCE(payment, 0) ELSE 0 END) AS instore_card,
+                SUM(CASE WHEN UPPER(TRIM(online_order_taker)) = 'UPI' THEN COALESCE(payment, 0) ELSE 0 END) AS instore_upi,
+                SUM(CASE WHEN UPPER(TRIM(online_order_taker)) = 'INSTORE' THEN COALESCE(payment, 0) ELSE 0 END) AS instore_other,
+                SUM(CASE WHEN UPPER(TRIM(online_order_taker)) IN ('CASH', 'CARD', 'UPI', 'INSTORE') THEN COALESCE(payment, 0) ELSE 0 END) AS instore_total,
+                COUNT(CASE WHEN UPPER(TRIM(online_order_taker)) IN ('CASH', 'CARD', 'UPI', 'INSTORE') THEN 1 END) AS instore_count
+            FROM orders
+            WHERE date BETWEEN :start_date AND :end_date
+            AND store_name IN ({instore_placeholders})
+            GROUP BY date, store_name
+        """)
+        instore_params = {
+            "start_date": start_date,
+            "end_date": end_date,
+            **store_params
+        }
+        instore_result = await db.execute(instore_query, instore_params)
+        instore_data = {(row.sales_date, row.store_code): row for row in instore_result.fetchall()}
+        logger.info(f"📊 Calculated In-Store Sales for {len(instore_data)} store+date combinations")
+        
+        # Step 4: Calculate Aggregator Sales from orders table
+        logger.info("📍 Step 4: Calculating Aggregator Sales from orders table...")
+        aggregator_query = text(f"""
+            SELECT 
+                date AS sales_date,
+                store_name AS store_code,
+                SUM(CASE WHEN online_order_taker = 'Zomato' THEN COALESCE(payment, 0) ELSE 0 END) AS aggregator_zomato,
+                SUM(CASE WHEN online_order_taker = 'Swiggy' THEN COALESCE(payment, 0) ELSE 0 END) AS aggregator_swiggy,
+                SUM(CASE WHEN online_order_taker = 'MagicPin' THEN COALESCE(payment, 0) ELSE 0 END) AS aggregator_magicpin,
+                SUM(CASE WHEN online_order_taker IN ('Zomato', 'Swiggy', 'MagicPin') THEN COALESCE(payment, 0) ELSE 0 END) AS aggregator_total,
+                COUNT(CASE WHEN online_order_taker IN ('Zomato', 'Swiggy', 'MagicPin') THEN 1 END) AS aggregator_count
+            FROM orders
+            WHERE date BETWEEN :start_date AND :end_date
+            AND store_name IN ({instore_placeholders})
+            GROUP BY date, store_name
+        """)
+        aggregator_result = await db.execute(aggregator_query, instore_params)
+        aggregator_data = {(row.sales_date, row.store_code): row for row in aggregator_result.fetchall()}
+        logger.info(f"📊 Calculated Aggregator Sales for {len(aggregator_data)} store+date combinations")
+        
+        # Step 5: Calculate Zomato formula values from zomato table
+        logger.info("📍 Step 5: Calculating Zomato formula values from zomato table...")
+        zomato_store_codes = [code for code in store_codes]  # Use same store codes
+        zomato_placeholders = ",".join([f":store_{i}" for i in range(len(zomato_store_codes))])
+        zomato_params = {f"store_{i}": code for i, code in enumerate(zomato_store_codes)}
+        
+        zomato_query = text(f"""
+            SELECT 
+                order_date AS sales_date,
+                store_code,
+                SUM(
+                    CASE 
+                        WHEN net_amount IS NOT NULL AND net_amount > 0 THEN net_amount
+                        ELSE (bill_subtotal - COALESCE(mvd, 0) + COALESCE(merchant_pack_charge, 0))
+                    END
+                ) AS zomato_net_amount,
+                SUM(bill_subtotal - COALESCE(mvd, 0) + COALESCE(merchant_pack_charge, 0)) AS zomato_calculated_amount,
+                SUM(COALESCE(final_amount, 0)) AS zomato_final_amount,
+                COUNT(*) AS zomato_order_count
+            FROM zomato
+            WHERE order_date BETWEEN :start_date AND :end_date
+            AND store_code IN ({zomato_placeholders})
+            AND action IN ('sale', 'addition')
+            GROUP BY order_date, store_code
+        """)
+        zomato_params = {
+            "start_date": start_date,
+            "end_date": end_date,
+            **zomato_params
+        }
+        zomato_result = await db.execute(zomato_query, zomato_params)
+        zomato_data = {(row.sales_date, row.store_code): row for row in zomato_result.fetchall()}
+        logger.info(f"📊 Calculated Zomato values for {len(zomato_data)} store+date combinations")
+        
+        # Step 6: Merge and insert/update daily_sales_summary
+        logger.info("📍 Step 6: Merging data and inserting/updating daily_sales_summary...")
+        records_processed = 0
+        
+        for sales_date, store_code in store_date_combos:
+            # Get data for this store+date combination
+            instore_row = instore_data.get((sales_date, store_code))
+            aggregator_row = aggregator_data.get((sales_date, store_code))
+            zomato_row = zomato_data.get((sales_date, store_code))
+            store_info = store_metadata.get(store_code, {"city_id": None, "zone": None})
+            
+            # Calculate totals
+            instore_total = Decimal(str(instore_row.instore_total)) if instore_row else Decimal('0')
+            aggregator_total = Decimal(str(aggregator_row.aggregator_total)) if aggregator_row else Decimal('0')
+            total_sales = instore_total + aggregator_total
+            
+            instore_count = instore_row.instore_count if instore_row else 0
+            aggregator_count = aggregator_row.aggregator_count if aggregator_row else 0
+            total_order_count = instore_count + aggregator_count
+            
+            # Insert or update
+            upsert_query = text("""
+                INSERT INTO daily_sales_summary (
+                    sales_date, store_code, city_id, zone,
+                    instore_cash, instore_card, instore_upi, instore_other, instore_total, instore_count,
+                    aggregator_zomato, aggregator_swiggy, aggregator_magicpin, aggregator_total, aggregator_count,
+                    zomato_net_amount, zomato_calculated_amount, zomato_final_amount, zomato_order_count,
+                    total_sales, total_order_count,
+                    created_at, updated_at
+                ) VALUES (
+                    :sales_date, :store_code, :city_id, :zone,
+                    :instore_cash, :instore_card, :instore_upi, :instore_other, :instore_total, :instore_count,
+                    :aggregator_zomato, :aggregator_swiggy, :aggregator_magicpin, :aggregator_total, :aggregator_count,
+                    :zomato_net_amount, :zomato_calculated_amount, :zomato_final_amount, :zomato_order_count,
+                    :total_sales, :total_order_count,
+                    NOW(), NOW()
+                )
+                ON DUPLICATE KEY UPDATE
+                    city_id = VALUES(city_id),
+                    zone = VALUES(zone),
+                    instore_cash = VALUES(instore_cash),
+                    instore_card = VALUES(instore_card),
+                    instore_upi = VALUES(instore_upi),
+                    instore_other = VALUES(instore_other),
+                    instore_total = VALUES(instore_total),
+                    instore_count = VALUES(instore_count),
+                    aggregator_zomato = VALUES(aggregator_zomato),
+                    aggregator_swiggy = VALUES(aggregator_swiggy),
+                    aggregator_magicpin = VALUES(aggregator_magicpin),
+                    aggregator_total = VALUES(aggregator_total),
+                    aggregator_count = VALUES(aggregator_count),
+                    zomato_net_amount = VALUES(zomato_net_amount),
+                    zomato_calculated_amount = VALUES(zomato_calculated_amount),
+                    zomato_final_amount = VALUES(zomato_final_amount),
+                    zomato_order_count = VALUES(zomato_order_count),
+                    total_sales = VALUES(total_sales),
+                    total_order_count = VALUES(total_order_count),
+                    updated_at = NOW()
+            """)
+            
+            await db.execute(upsert_query, {
+                "sales_date": sales_date,
+                "store_code": store_code,
+                "city_id": store_info["city_id"],
+                "zone": store_info["zone"],
+                "instore_cash": Decimal(str(instore_row.instore_cash)) if instore_row else Decimal('0'),
+                "instore_card": Decimal(str(instore_row.instore_card)) if instore_row else Decimal('0'),
+                "instore_upi": Decimal(str(instore_row.instore_upi)) if instore_row else Decimal('0'),
+                "instore_other": Decimal(str(instore_row.instore_other)) if instore_row else Decimal('0'),
+                "instore_total": instore_total,
+                "instore_count": instore_count,
+                "aggregator_zomato": Decimal(str(aggregator_row.aggregator_zomato)) if aggregator_row else Decimal('0'),
+                "aggregator_swiggy": Decimal(str(aggregator_row.aggregator_swiggy)) if aggregator_row else Decimal('0'),
+                "aggregator_magicpin": Decimal(str(aggregator_row.aggregator_magicpin)) if aggregator_row else Decimal('0'),
+                "aggregator_total": aggregator_total,
+                "aggregator_count": aggregator_count,
+                "zomato_net_amount": Decimal(str(zomato_row.zomato_net_amount)) if zomato_row else Decimal('0'),
+                "zomato_calculated_amount": Decimal(str(zomato_row.zomato_calculated_amount)) if zomato_row else Decimal('0'),
+                "zomato_final_amount": Decimal(str(zomato_row.zomato_final_amount)) if zomato_row else Decimal('0'),
+                "zomato_order_count": zomato_row.zomato_order_count if zomato_row else 0,
+                "total_sales": total_sales,
+                "total_order_count": total_order_count
+            })
+            records_processed += 1
+        
+        await db.commit()
+        logger.info(f"✅ Successfully processed {records_processed} records")
+        
+        return {
+            "success": True,
+            "message": f"Successfully populated daily_sales_summary for {start_date} to {end_date}",
+            "records_processed": records_processed,
+            "date_range": {
+                "start_date": str(start_date),
+                "end_date": str(end_date)
+            }
+        }
+        
+    except Exception as e:
+        await db.rollback()
+        logger.error(f"❌ Error populating daily_sales_summary: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error populating daily sales summary: {str(e)}"
+        )
+
+
+@router.post("/dashboard-sales")
+async def get_dashboard_sales(
+    request_data: DashboardSalesRequest,
+    db: AsyncSession = Depends(get_main_db),
+    current_user: UserDetails = Depends(get_current_user)
+):
+    """
+    Get dashboard sales data from pre-calculated daily_sales_summary table
+    Fast query with filtering by date range, cities, and stores
+    """
+    try:
+        from datetime import datetime
+        
+        logger.info("===========================================")
+        logger.info("🚀 /dashboard-sales API IS HIT")
+        logger.info("===========================================")
+        
+        start_date_str = request_data.start_date
+        end_date_str = request_data.end_date
+        stores = request_data.stores or []
+        cities = request_data.cities or []
+        
+        # Parse dates
+        start_date = datetime.strptime(start_date_str.split()[0], "%Y-%m-%d").date()
+        end_date = datetime.strptime(end_date_str.split()[0], "%Y-%m-%d").date()
+        
+        logger.info(f"📅 Querying date range: {start_date} to {end_date}")
+        logger.info(f"🏪 Stores filter: {len(stores)} stores")
+        logger.info(f"🏙️ Cities filter: {len(cities)} cities")
+        
+        # Build query with filters
+        query_parts = ["SELECT"]
+        query_parts.append("""
+            SUM(instore_total) AS instoreSales,
+            SUM(aggregator_total) AS aggregatorSales,
+            SUM(total_sales) AS totalSales,
+            SUM(instore_count + aggregator_count) AS totalOrders,
+            SUM(instore_cash) AS instoreCash,
+            SUM(instore_card) AS instoreCard,
+            SUM(instore_upi) AS instoreUpi,
+            SUM(instore_other) AS instoreOther,
+            SUM(aggregator_zomato) AS aggregatorZomato,
+            SUM(aggregator_swiggy) AS aggregatorSwiggy,
+            SUM(aggregator_magicpin) AS aggregatorMagicpin,
+            SUM(zomato_net_amount) AS zomatoNetAmount,
+            SUM(zomato_calculated_amount) AS zomatoCalculatedAmount
+        """)
+        query_parts.append("FROM daily_sales_summary")
+        query_parts.append("WHERE sales_date BETWEEN :start_date AND :end_date")
+        
+        params = {
+            "start_date": start_date,
+            "end_date": end_date
+        }
+        
+        # Add store filter
+        if stores:
+            store_placeholders = ",".join([f":store_{i}" for i in range(len(stores))])
+            query_parts.append(f"AND store_code IN ({store_placeholders})")
+            for i, store in enumerate(stores):
+                params[f"store_{i}"] = store
+        
+        # Add city filter
+        if cities:
+            city_placeholders = ",".join([f":city_{i}" for i in range(len(cities))])
+            query_parts.append(f"AND city_id IN ({city_placeholders})")
+            for i, city in enumerate(cities):
+                params[f"city_{i}"] = str(city)  # Ensure string
+        
+        query_str = " ".join(query_parts)
+        logger.info(f"📝 Executing query: {query_str[:200]}...")
+        
+        query = text(query_str)
+        result = await db.execute(query, params)
+        row = result.fetchone()
+        
+        if not row:
+            return {
+                "success": True,
+                "data": {
+                    "totalSales": 0,
+                    "instoreSales": 0,
+                    "aggregatorSales": 0,
+                    "totalOrders": 0,
+                    "breakdown": {
+                        "instore": {
+                            "cash": 0,
+                            "card": 0,
+                            "upi": 0,
+                            "other": 0
+                        },
+                        "aggregator": {
+                            "zomato": 0,
+                            "swiggy": 0,
+                            "magicpin": 0
+                        },
+                        "zomato": {
+                            "netAmount": 0,
+                            "calculatedAmount": 0
+                        }
+                    }
+                }
+            }
+        
+        # Format response
+        response_data = {
+            "success": True,
+            "data": {
+                "totalSales": float(row.totalSales or 0),
+                "instoreSales": float(row.instoreSales or 0),
+                "aggregatorSales": float(row.aggregatorSales or 0),
+                "totalOrders": int(row.totalOrders or 0),
+                "breakdown": {
+                    "instore": {
+                        "cash": float(row.instoreCash or 0),
+                        "card": float(row.instoreCard or 0),
+                        "upi": float(row.instoreUpi or 0),
+                        "other": float(row.instoreOther or 0)
+                    },
+                    "aggregator": {
+                        "zomato": float(row.aggregatorZomato or 0),
+                        "swiggy": float(row.aggregatorSwiggy or 0),
+                        "magicpin": float(row.aggregatorMagicpin or 0)
+                    },
+                    "zomato": {
+                        "netAmount": float(row.zomatoNetAmount or 0),
+                        "calculatedAmount": float(row.zomatoCalculatedAmount or 0)
+                    }
+                }
+            }
+        }
+        
+        logger.info(f"✅ Query successful. Total Sales: ₹{response_data['data']['totalSales']:,.2f}")
+        
+        return response_data
+        
+    except Exception as e:
+        logger.error(f"❌ Error querying dashboard sales: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error querying dashboard sales: {str(e)}"
+        )
