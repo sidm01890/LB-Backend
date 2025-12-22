@@ -24,7 +24,7 @@ _formula_hash_cache: Dict[int, str] = {}
 _initialized = False
 
 # Allow overriding via env var, default 10 seconds
-FORMULA_WATCH_INTERVAL_SECONDS = int(os.getenv("FORMULA_WATCH_INTERVAL_SECONDS", "10"))
+#FORMULA_WATCH_INTERVAL_SECONDS = int(os.getenv("FORMULA_WATCH_INTERVAL_SECONDS", "3000"))
 
 
 async def _fetch_recologics():
