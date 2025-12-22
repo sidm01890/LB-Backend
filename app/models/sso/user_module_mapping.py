@@ -3,15 +3,13 @@ UserModuleMapping model
 """
 
 from sqlalchemy import Column, Integer, BigInteger, Boolean, ForeignKey
-from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, delete
 from sqlalchemy.orm import relationship
+from app.config.database import Base
 import logging
 
 logger = logging.getLogger(__name__)
-
-Base = declarative_base()
 
 
 class UserModuleMapping(Base):

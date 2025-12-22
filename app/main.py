@@ -12,6 +12,7 @@ import logging
 from app.config.database import create_engines, test_connections, close_connections
 from app.config.executor import create_task_executor, shutdown_task_executor
 from app.config.settings import settings, validate_environment
+from app.config.mongodb import test_mongodb_connection, close_mongodb_connection
 from app.workers.tasks import run_scheduled_tasks
 from app.workers.formula_watcher import start_formula_watcher, stop_formula_watcher
 from app.workers.daily_sales_scheduler import start_daily_sales_scheduler, stop_daily_sales_scheduler
@@ -90,6 +91,14 @@ async def startup_event():
         logger.info("🔍 Testing database connections...")
         await test_connections()
         
+        # Test MongoDB connection
+        logger.info("🔍 Testing MongoDB connection...")
+        mongo_connected = test_mongodb_connection()
+        if mongo_connected:
+            logger.info("✅ MongoDB connection established successfully")
+        else:
+            logger.warning("⚠️ MongoDB connection failed - some features may be unavailable")
+        
         # Initialize task executor for parallel processing
         logger.info("⚙️ Initializing task executor for parallel processing...")
         create_task_executor(max_workers=settings.task_executor_workers)
@@ -128,6 +137,9 @@ async def shutdown_event():
         
         # Close database connections
         await close_connections()
+        
+        # Close MongoDB connection
+        close_mongodb_connection()
         
         logger.info("✅ Application shutdown completed")
         

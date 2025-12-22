@@ -107,6 +107,8 @@ class Settings(BaseSettings):
         case_sensitive = False
         # Allow .env file to be optional - use defaults if not present
         env_file_required = False
+        # Allow extra fields in .env that aren't defined in Settings (e.g., FORMULA_WATCH_INTERVAL_SECONDS)
+        extra = "ignore"
 
 
 # Create settings instance

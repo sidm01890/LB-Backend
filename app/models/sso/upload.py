@@ -4,15 +4,13 @@ Upload model
 
 from sqlalchemy import Column, Integer, String, Text, BigInteger, DateTime, Index
 from sqlalchemy.dialects.mysql import ENUM
-from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, delete
+from app.config.database import Base
 from datetime import datetime
 import logging
 
 logger = logging.getLogger(__name__)
-
-Base = declarative_base()
 
 
 class Upload(Base):

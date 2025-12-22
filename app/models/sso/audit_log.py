@@ -3,15 +3,13 @@ AuditLog model
 """
 
 from sqlalchemy import Column, BigInteger, String, Text, DateTime, Index
-from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, delete
+from app.config.database import Base
 from datetime import datetime
 import logging
 
 logger = logging.getLogger(__name__)
-
-Base = declarative_base()
 
 
 class AuditLog(Base):
