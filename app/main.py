@@ -59,10 +59,20 @@ app = FastAPI(
     redoc_url="/redoc"
 )
 
-# CORS middleware
+# CORS middleware - configure from environment variables
+cors_origins_list = ["*"]  # Default to allow all
+if settings.cors_origins and settings.cors_origins != "*":
+    # Parse comma-separated origins from environment variable
+    cors_origins_list = [origin.strip() for origin in settings.cors_origins.split(",") if origin.strip()]
+    logger.info(f"🌐 CORS configured with origins: {cors_origins_list}")
+else:
+    if settings.environment != "development":
+        logger.warning("⚠️ CORS is set to '*' in non-development environment! This may be a security risk.")
+    logger.info("🌐 CORS configured to allow all origins (*)")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure this properly for production
+    allow_origins=cors_origins_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
