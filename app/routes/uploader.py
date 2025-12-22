@@ -2,14 +2,14 @@
 File uploader routes
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Query, Request, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Query, Request, BackgroundTasks, Body
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from app.config.database import get_sso_db, get_main_db
 from app.middleware.auth import get_current_user
 from app.models.main.upload_record import UploadRecord
 from app.models.sso.user_details import UserDetails
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 import os
 import uuid
