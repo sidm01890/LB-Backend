@@ -101,6 +101,9 @@ class Settings(BaseSettings):
     # Task Executor Configuration (for parallel processing)
     task_executor_workers: int = 10  # Number of worker threads for background tasks
     
+    # CORS Configuration
+    cors_origins: str = "*"  # Comma-separated list of allowed origins, or "*" for all
+    
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
