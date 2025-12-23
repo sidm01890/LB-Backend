@@ -664,6 +664,10 @@ class MongoDBService:
                 "formulas_count": len(formulas),
                 "mapping_keys": mapping_keys,
                 "conditions": conditions,
+                "delta_columns": [],
+                "delta_columns_count": 0,
+                "reasons": [],
+                "reasons_count": 0,
                 "created_at": datetime.utcnow(),
                 "updated_at": datetime.utcnow()
             }
@@ -939,6 +943,238 @@ class MongoDBService:
         except Exception as e:
             logger.error(f"❌ Error getting all formulas: {e}")
             raise ValueError(f"Failed to get all formulas: {str(e)}")
+    
+    def get_delta_columns(self, report_name: str) -> Optional[List[Dict[str, Any]]]:
+        """
+        Get delta columns for a report from the 'formulas' collection
+        
+        Args:
+            report_name: Name of the report (will be converted to lowercase)
+        
+        Returns:
+            List of delta column dictionaries or None if not found
+        
+        Raises:
+            ConnectionError: If MongoDB is not connected
+            ValueError: If collection doesn't exist
+        """
+        if not self.is_connected():
+            raise ConnectionError("MongoDB is not connected")
+        
+        if not report_name or not report_name.strip():
+            raise ValueError("Report name is required and cannot be empty")
+        
+        try:
+            report_name_lower = report_name.lower().strip()
+            
+            # Check if formulas collection exists
+            if not self.collection_exists("formulas"):
+                raise ValueError(f"Formulas collection does not exist")
+            
+            # Get the document from formulas collection
+            collection = get_mongodb_collection("formulas")
+            document = collection.find_one({"report_name": report_name_lower})
+            
+            if not document:
+                logger.warning(f"⚠️ Report document not found for '{report_name_lower}' in 'formulas' collection")
+                return None
+            
+            # Get delta_columns from document (default to empty list if not present)
+            delta_columns = document.get("delta_columns", [])
+            
+            logger.info(f"✅ Retrieved delta columns for '{report_name_lower}' from 'formulas' collection")
+            return delta_columns
+            
+        except ValueError:
+            raise
+        except ConnectionError:
+            raise
+        except Exception as e:
+            logger.error(f"❌ Error getting delta columns for '{report_name}': {e}")
+            raise ValueError(f"Failed to get delta columns: {str(e)}")
+    
+    def update_delta_columns(
+        self,
+        report_name: str,
+        delta_columns: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """
+        Update delta columns for a report in the 'formulas' collection.
+        Document must exist.
+        
+        Args:
+            report_name: Name of the report (will be converted to lowercase)
+            delta_columns: List of delta column dictionaries
+        
+        Returns:
+            Dictionary with status and message
+        
+        Raises:
+            ConnectionError: If MongoDB is not connected
+            ValueError: If collection or document doesn't exist
+        """
+        if not self.is_connected():
+            raise ConnectionError("MongoDB is not connected")
+        
+        if not report_name or not report_name.strip():
+            raise ValueError("Report name is required and cannot be empty")
+        
+        try:
+            report_name_lower = report_name.lower().strip()
+            
+            # Check if formulas collection exists
+            if not self.collection_exists("formulas"):
+                raise ValueError(f"Formulas collection does not exist")
+            
+            collection = get_mongodb_collection("formulas")
+            
+            # Check if document exists
+            existing_doc = collection.find_one({"report_name": report_name_lower})
+            if not existing_doc:
+                raise ValueError(f"Report document not found for '{report_name_lower}' in 'formulas' collection")
+            
+            # Update the document with new delta_columns
+            collection.update_one(
+                {"report_name": report_name_lower},
+                {"$set": {
+                    "delta_columns": delta_columns,
+                    "delta_columns_count": len(delta_columns),
+                    "updated_at": datetime.utcnow()
+                }}
+            )
+            
+            logger.info(f"🔄 Updated delta columns for '{report_name_lower}' in 'formulas' collection")
+            
+            return {
+                "status": "success",
+                "message": f"Delta columns updated successfully for '{report_name_lower}' in 'formulas' collection",
+                "report_name": report_name_lower,
+                "delta_columns_count": len(delta_columns)
+            }
+            
+        except ValueError:
+            raise
+        except ConnectionError:
+            raise
+        except Exception as e:
+            logger.error(f"❌ Error updating delta columns for '{report_name}': {e}")
+            raise ValueError(f"Failed to update delta columns: {str(e)}")
+    
+    def get_reasons(self, report_name: str) -> Optional[List[Dict[str, Any]]]:
+        """
+        Get reasons for a report from the 'formulas' collection
+        
+        Args:
+            report_name: Name of the report (will be converted to lowercase)
+        
+        Returns:
+            List of reason dictionaries or None if not found
+        
+        Raises:
+            ConnectionError: If MongoDB is not connected
+            ValueError: If collection doesn't exist
+        """
+        if not self.is_connected():
+            raise ConnectionError("MongoDB is not connected")
+        
+        if not report_name or not report_name.strip():
+            raise ValueError("Report name is required and cannot be empty")
+        
+        try:
+            report_name_lower = report_name.lower().strip()
+            
+            # Check if formulas collection exists
+            if not self.collection_exists("formulas"):
+                raise ValueError(f"Formulas collection does not exist")
+            
+            # Get the document from formulas collection
+            collection = get_mongodb_collection("formulas")
+            document = collection.find_one({"report_name": report_name_lower})
+            
+            if not document:
+                logger.warning(f"⚠️ Report document not found for '{report_name_lower}' in 'formulas' collection")
+                return None
+            
+            # Get reasons from document (default to empty list if not present)
+            reasons = document.get("reasons", [])
+            
+            logger.info(f"✅ Retrieved reasons for '{report_name_lower}' from 'formulas' collection")
+            return reasons
+            
+        except ValueError:
+            raise
+        except ConnectionError:
+            raise
+        except Exception as e:
+            logger.error(f"❌ Error getting reasons for '{report_name}': {e}")
+            raise ValueError(f"Failed to get reasons: {str(e)}")
+    
+    def update_reasons(
+        self,
+        report_name: str,
+        reasons: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """
+        Update reasons for a report in the 'formulas' collection.
+        Document must exist.
+        
+        Args:
+            report_name: Name of the report (will be converted to lowercase)
+            reasons: List of reason dictionaries
+        
+        Returns:
+            Dictionary with status and message
+        
+        Raises:
+            ConnectionError: If MongoDB is not connected
+            ValueError: If collection or document doesn't exist
+        """
+        if not self.is_connected():
+            raise ConnectionError("MongoDB is not connected")
+        
+        if not report_name or not report_name.strip():
+            raise ValueError("Report name is required and cannot be empty")
+        
+        try:
+            report_name_lower = report_name.lower().strip()
+            
+            # Check if formulas collection exists
+            if not self.collection_exists("formulas"):
+                raise ValueError(f"Formulas collection does not exist")
+            
+            collection = get_mongodb_collection("formulas")
+            
+            # Check if document exists
+            existing_doc = collection.find_one({"report_name": report_name_lower})
+            if not existing_doc:
+                raise ValueError(f"Report document not found for '{report_name_lower}' in 'formulas' collection")
+            
+            # Update the document with new reasons
+            collection.update_one(
+                {"report_name": report_name_lower},
+                {"$set": {
+                    "reasons": reasons,
+                    "reasons_count": len(reasons),
+                    "updated_at": datetime.utcnow()
+                }}
+            )
+            
+            logger.info(f"🔄 Updated reasons for '{report_name_lower}' in 'formulas' collection")
+            
+            return {
+                "status": "success",
+                "message": f"Reasons updated successfully for '{report_name_lower}' in 'formulas' collection",
+                "report_name": report_name_lower,
+                "reasons_count": len(reasons)
+            }
+            
+        except ValueError:
+            raise
+        except ConnectionError:
+            raise
+        except Exception as e:
+            logger.error(f"❌ Error updating reasons for '{report_name}': {e}")
+            raise ValueError(f"Failed to update reasons: {str(e)}")
     
     def close(self):
         """Close MongoDB connection"""
