@@ -1,0 +1,48 @@
+version: "3.9"
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: laughingbuddha-backend
+    restart: unless-stopped
+    environment:
+      ENVIRONMENT: staging
+      DEBUG: "false"
+      HOST: 0.0.0.0
+      PORT: "8034"
+
+      # MySQL (AWS RDS)
+      SSO_DB_HOST: coreco-mysql.cpzxmgfkrh6g.ap-south-1.rds.amazonaws.com
+      SSO_DB_USER: admin
+      SSO_DB_PASSWORD: One4the$#
+      SSO_DB_NAME: devyani_sso
+      SSO_DB_PORT: "3306"
+
+      MAIN_DB_HOST: coreco-mysql.cpzxmgfkrh6g.ap-south-1.rds.amazonaws.com
+      MAIN_DB_USER: admin
+      MAIN_DB_PASSWORD: One4the$#
+      MAIN_DB_NAME: devyani
+      MAIN_DB_PORT: "3306"
+
+      # MongoDB (staging host IP)
+      MONGO_HOST: 172.31.13.243
+      MONGO_PORT: "27017"
+      MONGO_DATABASE: devyani_mongo
+      MONGO_USERNAME: devyani-application-client
+      MONGO_PASSWORD: CPPL1234
+      MONGO_AUTH_SOURCE: devyani_mongo
+
+      # Misc
+      CORS_ORIGINS: https://reconciistage.corepeelers.com,http://reconciistage.corepeelers.com,http://65.0.236.144,https://65.0.236.144
+      TASK_EXECUTOR_WORKERS: "10"
+      FORMULA_WATCH_INTERVAL_SECONDS: "3000"
+
+    ports:
+      - "8035:8034" # external:internal
+
+networks:
+  default:
+    driver: bridge
+
