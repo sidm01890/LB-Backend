@@ -33,8 +33,20 @@ def create_mongodb_client() -> MongoClient:
         connection_string = get_mongodb_connection_string()
         database_name = get_mongodb_database_name()
         
-        logger.info(f"Connecting to MongoDB: {settings.mongo_host}:{settings.mongo_port}")
-        logger.info(f"Database: {database_name}")
+        # Log connection details (without password)
+        logger.info(f"🔌 Connecting to MongoDB: {settings.mongo_host}:{settings.mongo_port}")
+        logger.info(f"📊 Database: {database_name}")
+        if settings.mongo_username:
+            logger.info(f"👤 Username: {settings.mongo_username}")
+            logger.info(f"🔐 Auth Source: {settings.mongo_auth_source}")
+        else:
+            logger.info("🔓 No authentication configured")
+        
+        # Log connection string (masked password)
+        masked_conn_str = connection_string
+        if settings.mongo_password:
+            masked_conn_str = connection_string.replace(settings.mongo_password, "***")
+        logger.debug(f"🔗 Connection string: {masked_conn_str}")
         
         # Create MongoDB client with connection pool settings
         _mongo_client = MongoClient(
@@ -53,12 +65,19 @@ def create_mongodb_client() -> MongoClient:
         
     except ConnectionFailure as e:
         logger.error(f"❌ MongoDB connection failed: {e}")
+        logger.error(f"   Host: {settings.mongo_host}:{settings.mongo_port}")
+        logger.error(f"   Database: {database_name}")
+        if settings.mongo_username:
+            logger.error(f"   Username: {settings.mongo_username}")
         raise
     except ServerSelectionTimeoutError as e:
         logger.error(f"❌ MongoDB server selection timeout: {e}")
+        logger.error(f"   Host: {settings.mongo_host}:{settings.mongo_port}")
+        logger.error(f"   This usually means the MongoDB server is not reachable or not running")
         raise
     except Exception as e:
         logger.error(f"❌ Unexpected MongoDB error: {e}")
+        logger.error(f"   Error type: {type(e).__name__}")
         raise
 
 
@@ -99,8 +118,19 @@ def test_mongodb_connection() -> bool:
         client.admin.command('ping')
         logger.info("✅ MongoDB connection test successful")
         return True
+    except ConnectionFailure as e:
+        logger.error(f"❌ MongoDB connection test failed - Connection Failure: {e}")
+        logger.error(f"   Check if MongoDB is running and accessible at {settings.mongo_host}:{settings.mongo_port}")
+        return False
+    except ServerSelectionTimeoutError as e:
+        logger.error(f"❌ MongoDB connection test failed - Server Selection Timeout: {e}")
+        logger.error(f"   MongoDB server at {settings.mongo_host}:{settings.mongo_port} is not reachable")
+        logger.error(f"   Check network connectivity and firewall rules")
+        return False
     except Exception as e:
         logger.error(f"❌ MongoDB connection test failed: {e}")
+        logger.error(f"   Error type: {type(e).__name__}")
+        logger.error(f"   Connection details: {settings.mongo_host}:{settings.mongo_port}, DB: {get_mongodb_database_name()}")
         return False
 
 

@@ -105,6 +105,9 @@ class Settings(BaseSettings):
     cors_origins: str = "*"  # Comma-separated list of allowed origins, or "*" for all
     
     class Config:
+        # pydantic_settings reads from environment variables first, then from env_file
+        # For staging, environment variables should be set in Docker Compose
+        # This allows .env for local dev, and env vars for Docker deployments
         env_file = ".env"
         env_file_encoding = "utf-8"
         case_sensitive = False
@@ -115,7 +118,16 @@ class Settings(BaseSettings):
 
 
 # Create settings instance
+# Note: pydantic_settings automatically reads from environment variables first,
+# so Docker environment variables will override .env file values
 settings = Settings()
+
+# Log environment configuration for debugging
+logger = logging.getLogger(__name__)
+logger.info(f"🌍 Environment: {settings.environment}")
+logger.info(f"🔧 MongoDB Config - Host: {settings.mongo_host}, Port: {settings.mongo_port}, DB: {settings.mongo_database}")
+if settings.mongo_username:
+    logger.info(f"👤 MongoDB Username: {settings.mongo_username}, Auth Source: {settings.mongo_auth_source}")
 
 # Database URLs
 def get_database_urls():
