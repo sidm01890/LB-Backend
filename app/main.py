@@ -111,13 +111,13 @@ async def startup_event():
         
         # Initialize task executor for parallel processing
         logger.info("⚙️ Initializing task executor for parallel processing...")
-        create_task_executor(max_workers=settings.task_executor_workers)
+        # create_task_executor(max_workers=settings.task_executor_workers)
 
         # Start formula watcher scheduler
-        await start_formula_watcher()
+        # await start_formula_watcher()
         
         # Start daily sales summary scheduler (runs every 10 seconds)
-        await start_daily_sales_scheduler()
+        # await start_daily_sales_scheduler()
         
         logger.info("✅ Database connections established successfully")
         logger.info("✅ Task executor initialized for parallel processing")

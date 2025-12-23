@@ -2,7 +2,7 @@
 User Details model for SSO database
 """
 
-from sqlalchemy import Column, BigInteger, String, Boolean, DateTime, Text, Integer
+from sqlalchemy import Column, BigInteger, String, Boolean, DateTime, Text, Integer, ForeignKey
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import relationship
 from app.config.database import Base
@@ -29,8 +29,8 @@ class UserDetails(Base):
     role_name = Column(Integer, nullable=False)
     user_label = Column(String(255), nullable=True)
     parent_username = Column(String(255), nullable=True)
-    organization_id = Column(BigInteger, nullable=True)
-    group_id = Column(BigInteger, nullable=True)
+    organization_id = Column(BigInteger, ForeignKey('organization.id'), nullable=True)
+    group_id = Column(BigInteger, ForeignKey('groups.id'), nullable=True)
     created_by = Column(String(255), nullable=False)
     updated_by = Column(String(255), nullable=False)
     created_date = Column(DateTime, nullable=True, default=datetime.utcnow)
@@ -43,7 +43,9 @@ class UserDetails(Base):
     reset_otp_expires = Column(DateTime, nullable=True)
     
     # Relationships
-    # Note: Relationships will be added after all models are loaded to avoid circular imports
+    organization = relationship("Organization", back_populates="users")
+    group = relationship("Group", back_populates="users")
+    user_module_mappings = relationship("UserModuleMapping", back_populates="user")
     
     @classmethod
     async def create(cls, db: AsyncSession, **kwargs):

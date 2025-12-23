@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 class Upload(Base):
-    __tablename__ = "upload_logs"
+    __tablename__ = "sso_upload_logs"
     
     id = Column(Integer, primary_key=True, autoincrement=True)
     filename = Column(String(255), nullable=False)

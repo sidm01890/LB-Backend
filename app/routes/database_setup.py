@@ -448,3 +448,124 @@ async def get_all_formulas(
     """Get all report formulas from the 'formulas' collection"""
     return await formulas_controller.get_all_formulas()
 
+
+class GetDeltaColumnsResponse(BaseModel):
+    """Response model for getting delta columns"""
+    status: int = Field(..., description="HTTP status code", example=200)
+    message: str = Field(..., description="Response message")
+    data: Dict[str, Any] = Field(..., description="Response data")
+
+
+@router.get(
+    "/reports/{report_name}/delta-columns",
+    tags=["Report Formulas"],
+    summary="Get delta columns",
+    response_model=GetDeltaColumnsResponse,
+    status_code=status.HTTP_200_OK
+)
+async def get_delta_columns(
+    report_name: str,
+    current_user: UserDetails = Depends(get_current_user)
+):
+    """Get delta columns by report name"""
+    return await formulas_controller.get_delta_columns(report_name)
+
+
+class DeltaColumnItem(BaseModel):
+    """Model for a single delta column"""
+    delta_column_name: str = Field(..., description="Name of the delta column", example="net_amount_delta")
+    first_formula: str = Field(..., description="First formula name", example="NET_AMOUNT")
+    second_formula: str = Field(..., description="Second formula name", example="CALCULATED_NET_AMOUNT")
+    value: str = Field(..., description="Delta calculation formula", example="NET_AMOUNT - CALCULATED_NET_AMOUNT")
+
+
+
+
+class UpdateDeltaColumnsResponse(BaseModel):
+    """Response model for updating delta columns"""
+    status: int = Field(..., description="HTTP status code", example=200)
+    message: str = Field(..., description="Response message")
+    data: Dict[str, Any] = Field(..., description="Response data")
+
+
+@router.put(
+    "/reports/{report_name}/delta-columns",
+    tags=["Report Formulas"],
+    summary="Update delta columns",
+    response_model=UpdateDeltaColumnsResponse,
+    status_code=status.HTTP_200_OK
+)
+async def update_delta_columns(
+    report_name: str,
+    delta_columns: List[DeltaColumnItem] = Body(...),
+    current_user: UserDetails = Depends(get_current_user)
+):
+    """Update delta columns in an existing MongoDB collection"""
+    # Convert DeltaColumnItem Pydantic models to dictionaries
+    delta_columns_dict = [dc.model_dump() for dc in delta_columns]
+    
+    return await formulas_controller.update_delta_columns(
+        report_name,
+        delta_columns_dict
+    )
+
+
+class ReasonItem(BaseModel):
+    """Model for a single reason"""
+    reason: str = Field(..., description="Reason name", example="High Variance")
+    description: str = Field(default="", description="Description of the reason", example="Difference exceeds threshold")
+    delta_column: str = Field(..., description="Delta column name", example="net_amount_delta")
+    threshold: float = Field(..., description="Threshold value", example=1000.0)
+    must_check: bool = Field(..., description="Must check flag", example=True)
+
+
+class GetReasonsResponse(BaseModel):
+    """Response model for getting reasons"""
+    status: int = Field(..., description="HTTP status code", example=200)
+    message: str = Field(..., description="Response message")
+    data: Dict[str, Any] = Field(..., description="Response data")
+
+
+@router.get(
+    "/reports/{report_name}/reasons",
+    tags=["Report Formulas"],
+    summary="Get reasons",
+    response_model=GetReasonsResponse,
+    status_code=status.HTTP_200_OK
+)
+async def get_reasons(
+    report_name: str,
+    current_user: UserDetails = Depends(get_current_user)
+):
+    """Get reasons by report name"""
+    return await formulas_controller.get_reasons(report_name)
+
+
+class UpdateReasonsResponse(BaseModel):
+    """Response model for updating reasons"""
+    status: int = Field(..., description="HTTP status code", example=200)
+    message: str = Field(..., description="Response message")
+    data: Dict[str, Any] = Field(..., description="Response data")
+
+
+@router.put(
+    "/reports/{report_name}/reasons",
+    tags=["Report Formulas"],
+    summary="Update reasons",
+    response_model=UpdateReasonsResponse,
+    status_code=status.HTTP_200_OK
+)
+async def update_reasons(
+    report_name: str,
+    reasons: List[ReasonItem] = Body(...),
+    current_user: UserDetails = Depends(get_current_user)
+):
+    """Update reasons in an existing MongoDB collection"""
+    # Convert ReasonItem Pydantic models to dictionaries
+    reasons_dict = [r.model_dump() for r in reasons]
+    
+    return await formulas_controller.update_reasons(
+        report_name,
+        reasons_dict
+    )
+

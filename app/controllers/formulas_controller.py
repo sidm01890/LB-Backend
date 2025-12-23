@@ -206,6 +206,10 @@ class FormulasController:
                     "formulas_count": document.get("formulas_count", len(document.get("formulas", []))),
                     "mapping_keys": document.get("mapping_keys", {}),
                     "conditions": document.get("conditions", {}),
+                    "delta_columns": document.get("delta_columns", []),
+                    "delta_columns_count": document.get("delta_columns_count", len(document.get("delta_columns", []))),
+                    "reasons": document.get("reasons", []),
+                    "reasons_count": document.get("reasons_count", len(document.get("reasons", []))),
                     "created_at": document.get("created_at"),
                     "updated_at": document.get("updated_at"),
                     "mongodb_connected": mongodb_service.is_connected()
@@ -378,5 +382,375 @@ class FormulasController:
             raise HTTPException(
                 status_code=500,
                 detail=f"Failed to get all formulas: {str(e)}"
+            )
+    
+    async def get_delta_columns(self, report_name: str) -> Dict[str, Any]:
+        """
+        Get delta columns for a report from the 'formulas' collection
+        
+        Args:
+            report_name: Name of the report
+        
+        Returns:
+            Dictionary with status and delta columns data
+        
+        Raises:
+            HTTPException: If collection doesn't exist or MongoDB is not connected
+        """
+        if not report_name or not report_name.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="Report name is required and cannot be empty"
+            )
+        
+        try:
+            delta_columns = mongodb_service.get_delta_columns(report_name.strip())
+            
+            if delta_columns is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Report document not found in collection '{report_name.lower().strip()}'"
+                )
+            
+            return {
+                "status": 200,
+                "message": "Delta columns retrieved successfully",
+                "data": {
+                    "report_name": report_name.strip(),
+                    "delta_columns": delta_columns,
+                    "delta_columns_count": len(delta_columns),
+                    "mongodb_connected": mongodb_service.is_connected()
+                }
+            }
+        
+        except ValueError as e:
+            error_msg = str(e)
+            if "does not exist" in error_msg or "not found" in error_msg:
+                raise HTTPException(
+                    status_code=404,
+                    detail=error_msg
+                )
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=error_msg
+                )
+        
+        except ConnectionError as e:
+            raise HTTPException(
+                status_code=503,
+                detail=f"MongoDB connection error: {str(e)}"
+            )
+        
+        except Exception as e:
+            logger.error(f"❌ Error getting delta columns for '{report_name}': {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to get delta columns: {str(e)}"
+            )
+    
+    async def update_delta_columns(
+        self,
+        report_name: str,
+        delta_columns: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """
+        Update delta columns for a report in the 'formulas' collection.
+        Document must exist.
+        
+        Args:
+            report_name: Name of the report
+            delta_columns: List of delta column dictionaries (similar structure to formulas)
+        
+        Returns:
+            Dictionary with status and details
+        
+        Raises:
+            HTTPException: If validation fails, collection doesn't exist, or MongoDB is not connected
+        """
+        if not report_name or not report_name.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="Report name is required and cannot be empty"
+            )
+        
+        # Validate delta_columns structure
+        for delta_col in delta_columns:
+            if not isinstance(delta_col, dict):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Each delta column must be a dictionary"
+                )
+            # Validate required fields for delta column structure
+            if "delta_column_name" not in delta_col:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Each delta column must have 'delta_column_name' field"
+                )
+            if "first_formula" not in delta_col:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Each delta column must have 'first_formula' field"
+                )
+            if "second_formula" not in delta_col:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Each delta column must have 'second_formula' field"
+                )
+            if "value" not in delta_col:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Each delta column must have 'value' field"
+                )
+            # Validate that fields are not empty
+            if not delta_col.get("delta_column_name") or not delta_col.get("delta_column_name").strip():
+                raise HTTPException(
+                    status_code=400,
+                    detail="Delta column name cannot be empty"
+                )
+            if not delta_col.get("first_formula") or not delta_col.get("first_formula").strip():
+                raise HTTPException(
+                    status_code=400,
+                    detail="First formula cannot be empty"
+                )
+            if not delta_col.get("second_formula") or not delta_col.get("second_formula").strip():
+                raise HTTPException(
+                    status_code=400,
+                    detail="Second formula cannot be empty"
+                )
+            if not delta_col.get("value") or not delta_col.get("value").strip():
+                raise HTTPException(
+                    status_code=400,
+                    detail="Value cannot be empty"
+                )
+        
+        try:
+            result = mongodb_service.update_delta_columns(
+                report_name.strip(),
+                delta_columns
+            )
+            
+            return {
+                "status": 200,
+                "message": result["message"],
+                "data": {
+                    "report_name": result["report_name"],
+                    "delta_columns_count": result["delta_columns_count"],
+                    "delta_columns": delta_columns,
+                    "mongodb_connected": mongodb_service.is_connected()
+                }
+            }
+        
+        except ValueError as e:
+            error_msg = str(e)
+            if "does not exist" in error_msg or "not found" in error_msg:
+                raise HTTPException(
+                    status_code=404,
+                    detail=error_msg
+                )
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=error_msg
+                )
+        
+        except ConnectionError as e:
+            raise HTTPException(
+                status_code=503,
+                detail=f"MongoDB connection error: {str(e)}"
+            )
+        
+        except Exception as e:
+            logger.error(f"❌ Error updating delta columns for '{report_name}': {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to update delta columns: {str(e)}"
+            )
+    
+    async def get_reasons(self, report_name: str) -> Dict[str, Any]:
+        """
+        Get reasons for a report from the 'formulas' collection
+        
+        Args:
+            report_name: Name of the report
+        
+        Returns:
+            Dictionary with status and reasons data
+        
+        Raises:
+            HTTPException: If collection doesn't exist or MongoDB is not connected
+        """
+        if not report_name or not report_name.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="Report name is required and cannot be empty"
+            )
+        
+        try:
+            reasons = mongodb_service.get_reasons(report_name.strip())
+            
+            if reasons is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Report document not found in collection '{report_name.lower().strip()}'"
+                )
+            
+            return {
+                "status": 200,
+                "message": "Reasons retrieved successfully",
+                "data": {
+                    "report_name": report_name.strip(),
+                    "reasons": reasons,
+                    "reasons_count": len(reasons),
+                    "mongodb_connected": mongodb_service.is_connected()
+                }
+            }
+        
+        except ValueError as e:
+            error_msg = str(e)
+            if "does not exist" in error_msg or "not found" in error_msg:
+                raise HTTPException(
+                    status_code=404,
+                    detail=error_msg
+                )
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=error_msg
+                )
+        
+        except ConnectionError as e:
+            raise HTTPException(
+                status_code=503,
+                detail=f"MongoDB connection error: {str(e)}"
+            )
+        
+        except Exception as e:
+            logger.error(f"❌ Error getting reasons for '{report_name}': {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to get reasons: {str(e)}"
+            )
+    
+    async def update_reasons(
+        self,
+        report_name: str,
+        reasons: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """
+        Update reasons for a report in the 'formulas' collection.
+        Document must exist.
+        
+        Args:
+            report_name: Name of the report
+            reasons: List of reason dictionaries
+        
+        Returns:
+            Dictionary with status and details
+        
+        Raises:
+            HTTPException: If validation fails, collection doesn't exist, or MongoDB is not connected
+        """
+        if not report_name or not report_name.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="Report name is required and cannot be empty"
+            )
+        
+        # Validate reasons structure
+        for reason in reasons:
+            if not isinstance(reason, dict):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Each reason must be a dictionary"
+                )
+            # Validate required fields for reason structure
+            if "reason" not in reason:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Each reason must have 'reason' field"
+                )
+            if "description" not in reason:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Each reason must have 'description' field"
+                )
+            if "delta_column" not in reason:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Each reason must have 'delta_column' field"
+                )
+            if "threshold" not in reason:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Each reason must have 'threshold' field"
+                )
+            if "must_check" not in reason:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Each reason must have 'must_check' field"
+                )
+            # Validate that must_check is a boolean
+            if not isinstance(reason.get("must_check"), bool):
+                raise HTTPException(
+                    status_code=400,
+                    detail="'must_check' must be a boolean (true/false)"
+                )
+            # Validate that fields are not empty (where applicable)
+            if not reason.get("reason") or not str(reason.get("reason")).strip():
+                raise HTTPException(
+                    status_code=400,
+                    detail="Reason cannot be empty"
+                )
+            # Description is optional, can be empty string
+            if "description" not in reason:
+                reason["description"] = ""
+            if not reason.get("delta_column") or not str(reason.get("delta_column")).strip():
+                raise HTTPException(
+                    status_code=400,
+                    detail="Delta column cannot be empty"
+                )
+        
+        try:
+            result = mongodb_service.update_reasons(
+                report_name.strip(),
+                reasons
+            )
+            
+            return {
+                "status": 200,
+                "message": result["message"],
+                "data": {
+                    "report_name": result["report_name"],
+                    "reasons_count": result["reasons_count"],
+                    "reasons": reasons,
+                    "mongodb_connected": mongodb_service.is_connected()
+                }
+            }
+        
+        except ValueError as e:
+            error_msg = str(e)
+            if "does not exist" in error_msg or "not found" in error_msg:
+                raise HTTPException(
+                    status_code=404,
+                    detail=error_msg
+                )
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=error_msg
+                )
+        
+        except ConnectionError as e:
+            raise HTTPException(
+                status_code=503,
+                detail=f"MongoDB connection error: {str(e)}"
+            )
+        
+        except Exception as e:
+            logger.error(f"❌ Error updating reasons for '{report_name}': {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to update reasons: {str(e)}"
             )
 
