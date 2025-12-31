@@ -4,14 +4,21 @@ Handles MongoDB collection setup and report formula management
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status, Body, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
+from datetime import datetime
+from io import BytesIO
+import pandas as pd
+import logging
+import os
 from app.middleware.auth import get_current_user
 from app.models.sso.user_details import UserDetails
 
 # Import controllers
 from app.controllers.db_setup_controller import DBSetupController
 from app.controllers.formulas_controller import FormulasController
+from app.services.mongodb_service import mongodb_service
 
 router = APIRouter()
 
@@ -568,4 +575,225 @@ async def update_reasons(
         report_name,
         reasons_dict
     )
+
+
+class GetReportCollectionKeysResponse(BaseModel):
+    """Response model for getting collection keys by report name"""
+    status: int = Field(..., description="HTTP status code", example=200)
+    message: str = Field(..., description="Response message")
+    data: Dict[str, Any] = Field(..., description="Response data")
+
+
+@router.get(
+    "/reports/{report_name}/collection-keys",
+    tags=["Report Formulas"],
+    summary="Get all keys from collection matching report name",
+    response_model=GetReportCollectionKeysResponse,
+    status_code=status.HTTP_200_OK
+)
+async def get_report_collection_keys(
+    report_name: str,
+    current_user: UserDetails = Depends(get_current_user)
+):
+    """
+    Get all keys from a MongoDB collection that matches the report name.
+    The report name is matched to a MongoDB collection name (case-insensitive).
+    Returns all keys including _id and system fields.
+    
+    Example:
+    - Input: zomato_vs_pos
+    - Matches collection: zomato_vs_pos
+    - Returns: ["_id", "zomato_mapping_key", "commission_percentage", ...]
+    """
+    return await formulas_controller.get_report_collection_keys(report_name)
+
+
+class GenerateReportExcelRequest(BaseModel):
+    """Request model for generating report Excel file"""
+    report_name: str = Field(..., description="Name of the report", example="zomato_vs_pos", min_length=1)
+    columns: List[str] = Field(..., description="Array of column names for the Excel file", example=["zomato_mapping_key", "commission_percentage", "net_amount"], min_items=1)
+    start_date: str = Field(..., description="Start date in YYYY-MM-DD format", example="2024-01-01")
+    end_date: str = Field(..., description="End date in YYYY-MM-DD format", example="2024-01-31")
+
+
+@router.post(
+    "/reports/generate-excel",
+    tags=["Report Formulas"],
+    summary="Generate Excel file for report with specified columns and date range (async background processing)",
+    status_code=status.HTTP_200_OK
+)
+async def generate_report_excel(
+    request: GenerateReportExcelRequest = Body(...),
+    current_user: UserDetails = Depends(get_current_user)
+):
+    """
+    Generate an Excel file for a report with specified columns and date range.
+    Returns immediately with generationId. Excel generation happens in background.
+    
+    Inputs:
+    1. report_name: Name of the report (matches MongoDB collection)
+    2. columns: Array of strings (column names for Excel)
+    3. start_date: Start date (YYYY-MM-DD)
+    4. end_date: End date (YYYY-MM-DD)
+    
+    Output:
+    - Returns generationId immediately
+    - Excel file generated in background and saved to reports/ directory
+    - Status can be checked via /api/reconciliation/generation-status
+    """
+    logger = logging.getLogger(__name__)
+    
+    try:
+        from app.models.main.excel_generation import ExcelGeneration, ExcelGenerationStatus
+        
+        # Validate date format
+        date_formats = ["%Y-%m-%d", "%Y-%m-%d %H:%M:%S"]
+        start_date_dt = None
+        end_date_dt = None
+        
+        for fmt in date_formats:
+            try:
+                start_date_dt = datetime.strptime(request.start_date, fmt).date()
+                break
+            except ValueError:
+                continue
+        
+        for fmt in date_formats:
+            try:
+                end_date_dt = datetime.strptime(request.end_date, fmt).date()
+                break
+            except ValueError:
+                continue
+        
+        if not start_date_dt or not end_date_dt:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid date format. Expected: YYYY-MM-DD or YYYY-MM-DD HH:MM:SS"
+            )
+        
+        if start_date_dt > end_date_dt:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Start date must be before or equal to end date"
+            )
+        
+        # Validate columns array
+        if not request.columns or len(request.columns) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="At least one column must be specified"
+            )
+        
+        # 🔥 OPTIMIZATION: Remove collection existence check - let background worker validate
+        # This check was blocking the response. Background worker will handle validation.
+        collection_name = request.report_name.lower().strip()
+        
+        # 🔥 OPTIMIZATION: Move directory creation to background worker
+        # Don't create directory here - let background worker handle it
+        reports_dir = "reports"
+        
+        # Convert date objects to datetime for MongoDB (fast operation)
+        start_datetime = datetime.combine(start_date_dt, datetime.min.time())
+        end_datetime = datetime.combine(end_date_dt, datetime.max.time())
+        
+        # 🔥 CRITICAL: Create MongoDB record (this is the only blocking operation we need)
+        # This is fast (<50ms typically) and we need the ID to return
+        store_code_label = f"CustomReport_{request.report_name}"
+        generation_record = await ExcelGeneration.create(
+            None,  # db parameter not needed for MongoDB
+            store_code=store_code_label,
+            start_date=start_datetime,
+            end_date=end_datetime,
+            status=ExcelGenerationStatus.PENDING,
+            progress=0,
+            message="Initializing Excel generation...",
+            metadata={
+                "report_name": request.report_name,
+                "columns": request.columns
+            }
+        )
+        
+        # 🔥 KEY CHANGE: Use multiprocessing.Process for TRUE isolation
+        # Similar to Node.js fork() - runs in completely separate process
+        # Main application is NEVER blocked - completely isolated execution
+        # This ensures the main thread stays responsive for other requests
+        import multiprocessing
+        from app.workers.process_worker import run_report_excel_generation
+        
+        task_params = {
+            "report_name": request.report_name,
+            "columns": request.columns,
+            "start_date": request.start_date,
+            "end_date": request.end_date,
+            "start_date_dt": start_date_dt.isoformat(),
+            "end_date_dt": end_date_dt.isoformat(),
+            "reports_dir": reports_dir
+        }
+        
+        # 🔥 MULTIPROCESSING: Start completely separate Python process
+        # This is equivalent to Node.js fork() - main app continues immediately
+        # The child process:
+        # - Has its own memory space (not shared)
+        # - Has its own CPU time (doesn't block main process)
+        # - Has its own database connections (separate MongoDB connection)
+        # - Runs completely independently
+        # - Can process 783K+ records without blocking main app
+        
+        # Use 'spawn' method for better isolation (default on Windows, Mac)
+        # This creates a fresh Python interpreter for the child process
+        try:
+            ctx = multiprocessing.get_context('spawn')
+            process = ctx.Process(
+                target=run_report_excel_generation,
+                args=(generation_record.id, task_params),  # generation_record.id is now a string (ObjectId)
+                daemon=False  # Don't kill when main process exits (let it finish)
+            )
+            process.start()
+            logger.info(f"✅ Started multiprocessing worker for generation {generation_record.id}, PID: {process.pid}")
+            
+            # Don't wait for process, but check if it started successfully
+            if not process.is_alive() and process.exitcode is not None:
+                logger.error(f"❌ Process {generation_record.id} exited immediately with code {process.exitcode}")
+                # Update status to failed
+                await ExcelGeneration.update_status(
+                    None,  # db parameter not needed for MongoDB
+                    generation_record.id,
+                    ExcelGenerationStatus.FAILED,
+                    message=f"Process failed to start (exit code: {process.exitcode})",
+                    error="Process worker failed to initialize"
+                )
+        except Exception as process_error:
+            logger.error(f"❌ Failed to start multiprocessing worker: {process_error}", exc_info=True)
+            # Update status to failed
+            await ExcelGeneration.update_status(
+                None,  # db parameter not needed for MongoDB
+                generation_record.id,
+                ExcelGenerationStatus.FAILED,
+                message="Failed to start background process",
+                error=str(process_error)
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to start background process"
+            )
+        
+        # 🔥 IMPORTANT: Don't wait for process - return immediately
+        # The process runs in completely separate memory space and CPU
+        # Main application continues normally - other requests are NOT blocked
+        logger.info(f"✅ Excel generation process started: {generation_record.id} (PID: {process.pid})")
+        return {
+            "success": True,
+            "message": "Excel generation started",
+            "generationId": generation_record.id,
+            "status": "PENDING"
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error starting Excel generation: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to start Excel generation: {str(e)}"
+        )
 

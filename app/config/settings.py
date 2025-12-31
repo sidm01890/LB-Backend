@@ -151,31 +151,61 @@ def get_database_urls():
         # Staging: Use sso_db_* settings from .env.staging file (contains AWS RDS credentials)
         # The .env.staging file should have SSO_DB_HOST, SSO_DB_USER, etc. set to AWS RDS values
         sso_user = quote_plus(settings.sso_db_user)
-        sso_pass = quote_plus(settings.sso_db_password)
+        sso_pass = quote_plus(settings.sso_db_password) if settings.sso_db_password else ""
         main_user = quote_plus(settings.main_db_user)
-        main_pass = quote_plus(settings.main_db_password)
-        sso_url = (
-            f"mysql+aiomysql://{sso_user}:{sso_pass}"
-            f"@{settings.sso_db_host}:{settings.sso_db_port}/{settings.sso_db_name}"
-        )
-        main_url = (
-            f"mysql+aiomysql://{main_user}:{main_pass}"
-            f"@{settings.main_db_host}:{settings.main_db_port}/{settings.main_db_name}"
-        )
+        main_pass = quote_plus(settings.main_db_password) if settings.main_db_password else ""
+        
+        # Build connection strings - omit password part if empty
+        if sso_pass:
+            sso_url = (
+                f"mysql+aiomysql://{sso_user}:{sso_pass}"
+                f"@{settings.sso_db_host}:{settings.sso_db_port}/{settings.sso_db_name}"
+            )
+        else:
+            sso_url = (
+                f"mysql+aiomysql://{sso_user}"
+                f"@{settings.sso_db_host}:{settings.sso_db_port}/{settings.sso_db_name}"
+            )
+        
+        if main_pass:
+            main_url = (
+                f"mysql+aiomysql://{main_user}:{main_pass}"
+                f"@{settings.main_db_host}:{settings.main_db_port}/{settings.main_db_name}"
+            )
+        else:
+            main_url = (
+                f"mysql+aiomysql://{main_user}"
+                f"@{settings.main_db_host}:{settings.main_db_port}/{settings.main_db_name}"
+            )
     else:
         # Development environment - use localhost defaults
         sso_user = quote_plus(settings.sso_db_user)
-        sso_pass = quote_plus(settings.sso_db_password)
+        sso_pass = quote_plus(settings.sso_db_password) if settings.sso_db_password else ""
         main_user = quote_plus(settings.main_db_user)
-        main_pass = quote_plus(settings.main_db_password)
-        sso_url = (
-            f"mysql+aiomysql://{sso_user}:{sso_pass}"
-            f"@{settings.sso_db_host}:{settings.sso_db_port}/{settings.sso_db_name}"
-        )
-        main_url = (
-            f"mysql+aiomysql://{main_user}:{main_pass}"
-            f"@{settings.main_db_host}:{settings.main_db_port}/{settings.main_db_name}"
-        )
+        main_pass = quote_plus(settings.main_db_password) if settings.main_db_password else ""
+        
+        # Build connection strings - omit password part if empty
+        if sso_pass:
+            sso_url = (
+                f"mysql+aiomysql://{sso_user}:{sso_pass}"
+                f"@{settings.sso_db_host}:{settings.sso_db_port}/{settings.sso_db_name}"
+            )
+        else:
+            sso_url = (
+                f"mysql+aiomysql://{sso_user}"
+                f"@{settings.sso_db_host}:{settings.sso_db_port}/{settings.sso_db_name}"
+            )
+        
+        if main_pass:
+            main_url = (
+                f"mysql+aiomysql://{main_user}:{main_pass}"
+                f"@{settings.main_db_host}:{settings.main_db_port}/{settings.main_db_name}"
+            )
+        else:
+            main_url = (
+                f"mysql+aiomysql://{main_user}"
+                f"@{settings.main_db_host}:{settings.main_db_port}/{settings.main_db_name}"
+            )
     
     return sso_url, main_url
 

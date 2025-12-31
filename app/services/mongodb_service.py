@@ -445,6 +445,57 @@ class MongoDBService:
             logger.error(f"❌ Error getting keys from collection '{collection_name_lower}': {e}")
             raise ValueError(f"Failed to get keys from collection: {str(e)}")
     
+    def get_all_collection_keys(self, collection_name: str) -> List[str]:
+        """
+        Get ALL unique keys from documents in a collection (including _id and all system fields)
+        
+        Args:
+            collection_name: Name of the collection (will be converted to lowercase)
+        
+        Returns:
+            List of ALL unique keys (including _id, created_at, updated_at, etc.)
+        
+        Raises:
+            ValueError: If collection doesn't exist
+            ConnectionError: If MongoDB is not connected
+        """
+        if not self.is_connected():
+            raise ConnectionError("MongoDB is not connected")
+        
+        collection_name_lower = collection_name.lower()
+        
+        # Check if collection exists
+        existing_collections = self.db.list_collection_names()
+        if collection_name_lower not in existing_collections:
+            raise ValueError(f"Collection '{collection_name_lower}' does not exist")
+        
+        try:
+            collection = get_mongodb_collection(collection_name_lower)
+            
+            # Get a sample of documents to extract keys
+            all_keys = set()
+            
+            # Get all documents (or a reasonable sample)
+            documents = collection.find({}).limit(1000)  # Limit to first 1000 docs for performance
+            
+            for doc in documents:
+                # Extract all keys from the document
+                keys = doc.keys()
+                all_keys.update(keys)
+            
+            # Return ALL keys without excluding anything
+            all_keys_list = sorted(list(all_keys))
+            
+            logger.info(f"🔑 Found {len(all_keys_list)} unique key(s) in collection '{collection_name_lower}' (including all system fields)")
+            
+            return all_keys_list
+            
+        except ValueError:
+            raise
+        except Exception as e:
+            logger.error(f"❌ Error getting all keys from collection '{collection_name_lower}': {e}")
+            raise ValueError(f"Failed to get all keys from collection: {str(e)}")
+    
     def save_collection_field_mapping(
         self,
         collection_name: str,
@@ -1175,6 +1226,107 @@ class MongoDBService:
         except Exception as e:
             logger.error(f"❌ Error updating reasons for '{report_name}': {e}")
             raise ValueError(f"Failed to update reasons: {str(e)}")
+    
+    def query_collection_by_date_range(
+        self,
+        collection_name: str,
+        columns: List[str],
+        start_date: datetime,
+        end_date: datetime,
+        date_field: str = "order_date"
+    ) -> List[Dict[str, Any]]:
+        """
+        Query MongoDB collection by date range and return specified columns
+        
+        Args:
+            collection_name: Name of the collection (will be converted to lowercase)
+            columns: List of column names to retrieve
+            start_date: Start date for filtering (datetime object)
+            end_date: End date for filtering (datetime object)
+            date_field: Name of the date field to filter on (default: "order_date")
+        
+        Returns:
+            List of dictionaries with specified columns
+        
+        Raises:
+            ConnectionError: If MongoDB is not connected
+            ValueError: If collection doesn't exist
+        """
+        if not self.is_connected():
+            raise ConnectionError("MongoDB is not connected")
+        
+        collection_name_lower = collection_name.lower()
+        
+        # Check if collection exists
+        existing_collections = self.db.list_collection_names()
+        if collection_name_lower not in existing_collections:
+            raise ValueError(f"Collection '{collection_name_lower}' does not exist")
+        
+        try:
+            collection = get_mongodb_collection(collection_name_lower)
+            
+            # Build query filter for date range
+            # Convert start_date and end_date to datetime objects if they're dates
+            if isinstance(start_date, datetime):
+                start_datetime = start_date
+            else:
+                start_datetime = datetime.combine(start_date, datetime.min.time())
+            
+            if isinstance(end_date, datetime):
+                end_datetime = end_date
+            else:
+                # For end_date, include the entire day (end of day)
+                end_datetime = datetime.combine(end_date, datetime.max.time())
+            
+            # Build query filter
+            query_filter = {
+                date_field: {
+                    "$gte": start_datetime,
+                    "$lte": end_datetime
+                }
+            }
+            
+            # Build projection to include only specified columns
+            # Always include _id if it's in the columns list
+            projection = {}
+            for col in columns:
+                projection[col] = 1
+            
+            # Query the collection
+            documents = list(collection.find(query_filter, projection).sort(date_field, 1))
+            
+            # Convert ObjectId to string and datetime to ISO format
+            from bson import ObjectId
+            result = []
+            for doc in documents:
+                processed_doc = {}
+                for col in columns:
+                    if col in doc:
+                        value = doc[col]
+                        # Convert ObjectId to string
+                        if isinstance(value, ObjectId):
+                            processed_doc[col] = str(value)
+                        # Convert datetime to ISO format string
+                        elif isinstance(value, datetime):
+                            processed_doc[col] = value.isoformat()
+                        else:
+                            processed_doc[col] = value
+                    else:
+                        # Column doesn't exist in document, set to None
+                        processed_doc[col] = None
+                result.append(processed_doc)
+            
+            logger.info(f"✅ Retrieved {len(result)} document(s) from collection '{collection_name_lower}' filtered by {date_field} between {start_datetime} and {end_datetime}")
+            
+            return result
+            
+        except ValueError:
+            raise
+        except ConnectionError:
+            raise
+        except Exception as e:
+            logger.error(f"❌ Error querying collection '{collection_name_lower}': {e}")
+            raise ValueError(f"Failed to query collection: {str(e)}")
     
     def close(self):
         """Close MongoDB connection"""

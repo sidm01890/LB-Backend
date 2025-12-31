@@ -106,6 +106,15 @@ async def startup_event():
         mongo_connected = test_mongodb_connection()
         if mongo_connected:
             logger.info("✅ MongoDB connection established successfully")
+            
+            # Initialize MongoDB indexes for Excel Generation
+            logger.info("📊 Initializing MongoDB indexes for Excel Generation...")
+            try:
+                from app.services.excel_generation_service import ExcelGenerationService
+                ExcelGenerationService.initialize_indexes()
+                logger.info("✅ MongoDB indexes initialized successfully")
+            except Exception as index_error:
+                logger.warning(f"⚠️ Failed to initialize MongoDB indexes: {index_error}")
         else:
             logger.warning("⚠️ MongoDB connection failed - some features may be unavailable")
         

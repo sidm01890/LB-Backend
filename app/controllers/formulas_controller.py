@@ -753,4 +753,66 @@ class FormulasController:
                 status_code=500,
                 detail=f"Failed to update reasons: {str(e)}"
             )
+    
+    async def get_report_collection_keys(self, report_name: str) -> Dict[str, Any]:
+        """
+        Get all keys from a MongoDB collection that matches the report name
+        
+        Args:
+            report_name: Name of the report (will be matched to MongoDB collection name)
+        
+        Returns:
+            Dictionary with status and list of all keys from the collection
+        
+        Raises:
+            HTTPException: If collection doesn't exist or MongoDB is not connected
+        """
+        if not report_name or not report_name.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="Report name is required and cannot be empty"
+            )
+        
+        try:
+            # Match report_name to collection name (convert to lowercase)
+            collection_name = report_name.strip().lower()
+            keys = mongodb_service.get_all_collection_keys(collection_name)
+            
+            return {
+                "status": 200,
+                "message": f"Retrieved {len(keys)} key(s) from collection '{collection_name}'",
+                "data": {
+                    "report_name": report_name.strip(),
+                    "collection_name": collection_name,
+                    "keys": keys,
+                    "count": len(keys),
+                    "mongodb_connected": mongodb_service.is_connected()
+                }
+            }
+        
+        except ValueError as e:
+            error_msg = str(e)
+            if "does not exist" in error_msg:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Collection '{report_name.strip().lower()}' does not exist in MongoDB"
+                )
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=error_msg
+                )
+        
+        except ConnectionError as e:
+            raise HTTPException(
+                status_code=503,
+                detail=f"MongoDB connection error: {str(e)}"
+            )
+        
+        except Exception as e:
+            logger.error(f"❌ Error getting collection keys for report '{report_name}': {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to get collection keys: {str(e)}"
+            )
 

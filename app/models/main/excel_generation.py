@@ -1,18 +1,18 @@
 """
 Excel Generation model for tracking Excel generation jobs
+Now uses MongoDB instead of MySQL
 """
 
-from sqlalchemy import Column, Integer, String, Text, DateTime
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update
 from datetime import datetime
 import enum
 import logging
+from typing import Optional, Dict, Any, List
+from app.services.excel_generation_service import (
+    ExcelGenerationService,
+    ExcelGenerationStatus as ServiceExcelGenerationStatus
+)
 
 logger = logging.getLogger(__name__)
-
-Base = declarative_base()
 
 
 class ExcelGenerationStatus(str, enum.Enum):
@@ -23,181 +23,154 @@ class ExcelGenerationStatus(str, enum.Enum):
     FAILED = "FAILED"
 
 
-class ExcelGeneration(Base):
-    """Excel Generation model"""
-    __tablename__ = "excel_generations"
+class ExcelGeneration:
+    """
+    Excel Generation model - MongoDB-based
+    Maintains same interface as SQLAlchemy model for backward compatibility
+    """
     
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    store_code = Column(String(255), nullable=False)
-    start_date = Column(DateTime, nullable=False)
-    end_date = Column(DateTime, nullable=False)
-    status = Column(String(50), default=ExcelGenerationStatus.PENDING.value, nullable=False)
-    progress = Column(Integer, default=0, nullable=False)
-    message = Column(Text, nullable=True)
-    filename = Column(Text, nullable=True)
-    error = Column(Text, nullable=True)
-    created_at = Column(DateTime, nullable=True, default=datetime.utcnow)
-    updated_at = Column(DateTime, nullable=True, default=datetime.utcnow, onupdate=datetime.utcnow)
+    def __init__(self, **kwargs):
+        """Initialize ExcelGeneration instance from dictionary"""
+        self.id = kwargs.get("id")
+        self.store_code = kwargs.get("store_code")
+        self.start_date = kwargs.get("start_date")
+        self.end_date = kwargs.get("end_date")
+        self.status = kwargs.get("status")
+        self.progress = kwargs.get("progress", 0)
+        self.message = kwargs.get("message")
+        self.filename = kwargs.get("filename")
+        self.error = kwargs.get("error")
+        self.created_at = kwargs.get("created_at")
+        self.updated_at = kwargs.get("updated_at")
     
     @classmethod
-    async def create(cls, db: AsyncSession, **kwargs):
-        """Create a new Excel generation record"""
+    async def create(cls, db=None, **kwargs):
+        """
+        Create a new Excel generation record
+        Note: db parameter is kept for backward compatibility but not used (MongoDB doesn't need it)
+        """
         try:
-            # Ensure status is stored as string value
+            # Convert status enum if needed
             if 'status' in kwargs:
                 if isinstance(kwargs['status'], ExcelGenerationStatus):
-                    kwargs['status'] = kwargs['status'].value
+                    kwargs['status'] = ServiceExcelGenerationStatus(kwargs['status'].value)
                 elif isinstance(kwargs['status'], str):
-                    # Ensure uppercase
-                    kwargs['status'] = kwargs['status'].upper()
+                    kwargs['status'] = ServiceExcelGenerationStatus(kwargs['status'].upper())
             else:
-                kwargs['status'] = ExcelGenerationStatus.PENDING.value
+                kwargs['status'] = ServiceExcelGenerationStatus.PENDING
             
-            record = cls(**kwargs)
-            db.add(record)
-            await db.commit()
-            await db.refresh(record)
-            return record
+            # Create record in MongoDB
+            result_dict = await ExcelGenerationService.create(**kwargs)
+            
+            # Return instance matching old interface
+            return cls(**result_dict)
         except Exception as e:
-            await db.rollback()
             logger.error(f"Error creating excel_generation record: {e}")
             raise
     
     @classmethod
-    async def get_by_id(cls, db: AsyncSession, generation_id: int):
-        """Get Excel generation record by ID"""
+    async def get_by_id(cls, db=None, generation_id=None):
+        """
+        Get Excel generation record by ID
+        Note: db parameter is kept for backward compatibility but not used
+        """
         try:
-            query = select(cls).where(cls.id == generation_id)
-            result = await db.execute(query)
-            return result.scalar_one_or_none()
+            # Convert int to string if needed (for backward compatibility)
+            if isinstance(generation_id, int):
+                # MongoDB uses ObjectId strings, but we'll handle this in the service
+                generation_id = str(generation_id)
+            
+            result_dict = await ExcelGenerationService.get_by_id(generation_id)
+            
+            if result_dict:
+                return cls(**result_dict)
+            return None
         except Exception as e:
             logger.error(f"Error getting excel_generation by id: {e}")
             return None
     
     @classmethod
-    async def update_status(cls, db: AsyncSession, generation_id: int, status: ExcelGenerationStatus, 
+    async def update_status(cls, db=None, generation_id=None, status: ExcelGenerationStatus = None, 
                            progress: int = None, message: str = None, filename: str = None, error: str = None):
-        """Update Excel generation status"""
+        """
+        Update Excel generation status
+        Note: db parameter is kept for backward compatibility but not used
+        """
         try:
-            # Convert enum to string value
-            status_value = status.value if isinstance(status, ExcelGenerationStatus) else status.upper()
-            update_data = {
-                "status": status_value,
-                "updated_at": datetime.utcnow()
-            }
-            if progress is not None:
-                update_data["progress"] = progress
-            if message is not None:
-                update_data["message"] = message
-            if filename is not None:
-                update_data["filename"] = filename
-            if error is not None:
-                update_data["error"] = error
+            # Convert generation_id to string if needed
+            if isinstance(generation_id, int):
+                generation_id = str(generation_id)
             
-            query = update(cls).where(cls.id == generation_id).values(**update_data)
-            await db.execute(query)
-            await db.commit()
-            return True
+            # Convert status enum to service enum
+            if isinstance(status, ExcelGenerationStatus):
+                service_status = ServiceExcelGenerationStatus(status.value)
+            else:
+                service_status = ServiceExcelGenerationStatus(status.upper() if status else "PENDING")
+            
+            return await ExcelGenerationService.update_status(
+                generation_id=generation_id,
+                status=service_status,
+                progress=progress,
+                message=message,
+                filename=filename,
+                error=error
+            )
         except Exception as e:
-            await db.rollback()
             logger.error(f"Error updating excel_generation status: {e}")
             return False
     
     @classmethod
-    async def get_all(cls, db: AsyncSession, limit: int = 100, offset: int = 0, 
+    async def get_all(cls, db=None, limit: int = 100, offset: int = 0, 
                       status: str = None, store_code_pattern: str = None,
                       start_date: datetime = None, end_date: datetime = None):
-        """Get all Excel generation records with optional filtering"""
+        """
+        Get all Excel generation records with optional filtering
+        Note: db parameter is kept for backward compatibility but not used
+        """
         try:
-            query = select(cls)
+            result_dicts = await ExcelGenerationService.get_all(
+                limit=limit,
+                offset=offset,
+                status=status,
+                store_code_pattern=store_code_pattern,
+                start_date=start_date,
+                end_date=end_date
+            )
             
-            # Apply filters
-            if status:
-                # Handle comma-separated statuses
-                status_list = [s.strip().upper() for s in status.split(',')]
-                from sqlalchemy import or_
-                query = query.where(or_(*[cls.status == s for s in status_list]))
-            
-            if store_code_pattern:
-                query = query.where(cls.store_code.like(f'%{store_code_pattern}%'))
-            
-            if start_date:
-                query = query.where(cls.created_at >= start_date)
-            
-            if end_date:
-                query = query.where(cls.created_at <= end_date)
-            
-            # Order and paginate
-            query = query.order_by(cls.created_at.desc()).limit(limit).offset(offset)
-            
-            result = await db.execute(query)
-            return result.scalars().all()
+            # Convert dictionaries to ExcelGeneration instances
+            return [cls(**result_dict) for result_dict in result_dicts]
         except Exception as e:
             logger.error(f"Error getting all excel_generation records: {e}")
             return []
     
     @classmethod
-    async def count_all(cls, db: AsyncSession, status: str = None, 
+    async def count_all(cls, db=None, status: str = None, 
                        store_code_pattern: str = None,
                        start_date: datetime = None, end_date: datetime = None):
-        """Count Excel generation records with optional filtering"""
+        """
+        Count Excel generation records with optional filtering
+        Note: db parameter is kept for backward compatibility but not used
+        """
         try:
-            from sqlalchemy import func, or_
-            query = select(func.count(cls.id))
-            
-            # Apply same filters as get_all
-            if status:
-                status_list = [s.strip().upper() for s in status.split(',')]
-                query = query.where(or_(*[cls.status == s for s in status_list]))
-            
-            if store_code_pattern:
-                query = query.where(cls.store_code.like(f'%{store_code_pattern}%'))
-            
-            if start_date:
-                query = query.where(cls.created_at >= start_date)
-            
-            if end_date:
-                query = query.where(cls.created_at <= end_date)
-            
-            result = await db.execute(query)
-            return result.scalar() or 0
+            return await ExcelGenerationService.count_all(
+                status=status,
+                store_code_pattern=store_code_pattern,
+                start_date=start_date,
+                end_date=end_date
+            )
         except Exception as e:
             logger.error(f"Error counting excel_generation records: {e}")
             return 0
     
     @classmethod
-    async def mark_stale_pending_as_failed(cls, db: AsyncSession, threshold_minutes: int = 30):
-        """Mark pending jobs older than threshold as failed"""
+    async def mark_stale_pending_as_failed(cls, db=None, threshold_minutes: int = 30):
+        """
+        Mark pending jobs older than threshold as failed
+        Note: db parameter is kept for backward compatibility but not used
+        """
         try:
-            from datetime import timedelta
-            threshold_time = datetime.utcnow() - timedelta(minutes=threshold_minutes)
-            
-            # Find stale pending jobs
-            query = select(cls).where(
-                cls.status == ExcelGenerationStatus.PENDING.value,
-                cls.created_at < threshold_time
-            )
-            result = await db.execute(query)
-            stale_jobs = result.scalars().all()
-            
-            if stale_jobs:
-                stale_ids = [job.id for job in stale_jobs]
-                # Update them
-                update_query = update(cls).where(
-                    cls.id.in_(stale_ids)
-                ).values(
-                    status=ExcelGenerationStatus.FAILED.value,
-                    message=f"Job timed out after {threshold_minutes} minutes without processing",
-                    error="Job was never picked up by worker process and timed out",
-                    updated_at=datetime.utcnow()
-                )
-                await db.execute(update_query)
-                await db.commit()
-                logger.info(f"Marked {len(stale_ids)} stale pending jobs as failed (IDs: {stale_ids})")
-                return len(stale_ids)
-            return 0
+            return await ExcelGenerationService.mark_stale_pending_as_failed(threshold_minutes)
         except Exception as e:
-            await db.rollback()
             logger.error(f"Error marking stale pending jobs as failed: {e}")
             return 0
     
@@ -207,6 +180,9 @@ class ExcelGeneration(Base):
             """Format datetime to match Node.js format (with .000Z)"""
             if dt is None:
                 return None
+            # Handle string datetime (already formatted)
+            if isinstance(dt, str):
+                return dt
             # Ensure UTC timezone if naive datetime
             if dt.tzinfo is None:
                 from datetime import timezone
@@ -224,14 +200,14 @@ class ExcelGeneration(Base):
         return {
             "id": self.id,
             "store_code": self.store_code,
-            "start_date": format_datetime(self.start_date),
-            "end_date": format_datetime(self.end_date),
+            "start_date": format_datetime(self.start_date) if isinstance(self.start_date, datetime) else self.start_date,
+            "end_date": format_datetime(self.end_date) if isinstance(self.end_date, datetime) else self.end_date,
             "status": status_value,
             "progress": self.progress,
             "message": self.message,
             "filename": self.filename,
             "error": self.error,
-            "created_at": format_datetime(self.created_at),
-            "updated_at": format_datetime(self.updated_at)
+            "created_at": format_datetime(self.created_at) if isinstance(self.created_at, datetime) else self.created_at,
+            "updated_at": format_datetime(self.updated_at) if isinstance(self.updated_at, datetime) else self.updated_at
         }
 

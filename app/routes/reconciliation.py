@@ -1508,10 +1508,9 @@ async def check_reconciliation_status(
 async def generate_reconciliation_excel(
     request: Request,
     background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_main_db),  # Use main_db for reconciliation tables
     current_user: UserDetails = Depends(get_current_user)
 ):
-    """Generate reconciliation Excel - returns immediately with generationId"""
+    """Generate reconciliation Excel - returns immediately with generationId (MongoDB-based)"""
     try:
         from app.models.main.excel_generation import ExcelGeneration, ExcelGenerationStatus
         
@@ -1601,10 +1600,10 @@ async def generate_reconciliation_excel(
         reports_dir = "reports"
         os.makedirs(reports_dir, exist_ok=True)
         
-        # Create initial record in database
+        # Create initial record in MongoDB
         store_code_label = f"SummaryReport_{len(stores)} store(s)"
         generation_record = await ExcelGeneration.create(
-            db,
+            None,  # db parameter not needed for MongoDB
             store_code=store_code_label,
             start_date=start_date_dt,
             end_date=end_date_dt,
@@ -1616,7 +1615,7 @@ async def generate_reconciliation_excel(
         # Add background task
         background_tasks.add_task(
             process_excel_generation,
-            generation_record.id,
+            generation_record.id,  # This will be a string (ObjectId) now
             {
                 "start_date": start_date,
                 "end_date": end_date,
@@ -1651,10 +1650,9 @@ from app.workers.tasks import process_excel_generation, process_receivable_recei
 async def generate_receivable_receipt_excel(
     request_data: GenerateExcelRequest,
     background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_main_db),  # Use main_db for reconciliation tables
     current_user: UserDetails = Depends(get_current_user)
 ):
-    """Generate receivable receipt Excel - returns immediately with generationId"""
+    """Generate receivable receipt Excel - returns immediately with generationId (MongoDB-based)"""
     try:
         from app.models.main.excel_generation import ExcelGeneration, ExcelGenerationStatus
         
@@ -1700,10 +1698,10 @@ async def generate_receivable_receipt_excel(
         reports_dir = "reports"
         os.makedirs(reports_dir, exist_ok=True)
         
-        # Create initial record in database
+        # Create initial record in MongoDB
         store_code_label = f"ReceivableVsReceipt_{len(request_data.stores)} store(s)"
         generation_record = await ExcelGeneration.create(
-            db,
+            None,  # db parameter not needed for MongoDB
             store_code=store_code_label,
             start_date=start_date_dt,
             end_date=end_date_dt,
@@ -1715,7 +1713,7 @@ async def generate_receivable_receipt_excel(
         # Add background task
         background_tasks.add_task(
             process_receivable_receipt_excel_generation,
-            generation_record.id,
+            generation_record.id,  # This will be a string (ObjectId) now
             {
                 "start_date": request_data.start_date,
                 "end_date": request_data.end_date,
@@ -1745,17 +1743,16 @@ async def generate_receivable_receipt_excel(
 @router.post("/generation-status")
 async def check_generation_status(
     request_data: GenerationStatusRequest,
-    db: AsyncSession = Depends(get_main_db),
     current_user: UserDetails = Depends(get_current_user)
 ):
-    """Check Excel generation status - supports filtering, pagination, and stale job cleanup"""
+    """Check Excel generation status - supports filtering, pagination, and stale job cleanup (MongoDB-based)"""
     try:
         from app.models.main.excel_generation import ExcelGeneration, ExcelGenerationStatus
         
         # Handle stale pending jobs if enabled
         if request_data.exclude_stale_pending and request_data.stale_threshold_minutes > 0:
             await ExcelGeneration.mark_stale_pending_as_failed(
-                db, 
+                None,  # db parameter not needed for MongoDB
                 request_data.stale_threshold_minutes
             )
         
@@ -1763,8 +1760,12 @@ async def check_generation_status(
         generation_id = request_data.get_generation_id()
         
         if generation_id:
+            # Convert to string if it's an integer (for backward compatibility)
+            if isinstance(generation_id, int):
+                generation_id = str(generation_id)
+            
             # Return specific generation by ID
-            generation = await ExcelGeneration.get_by_id(db, generation_id)
+            generation = await ExcelGeneration.get_by_id(None, generation_id)  # db parameter not needed
             
             if not generation:
                 raise HTTPException(
@@ -1824,7 +1825,7 @@ async def check_generation_status(
             
             # Get filtered and paginated results
             generations = await ExcelGeneration.get_all(
-                db,
+                None,  # db parameter not needed for MongoDB
                 limit=request_data.limit,
                 offset=request_data.offset,
                 status=request_data.status,
@@ -5822,10 +5823,10 @@ async def generate_summary_sheet(
         reports_dir = "reports"
         os.makedirs(reports_dir, exist_ok=True)
         
-        # Create initial record in database
+        # Create initial record in MongoDB
         store_code_label = f"SummarySheet_{len(request_data.stores)} store(s)"
         generation_record = await ExcelGeneration.create(
-            db,
+            None,  # db parameter not needed for MongoDB
             store_code=store_code_label,
             start_date=start_date_dt,
             end_date=end_date_dt,
@@ -5862,7 +5863,7 @@ async def generate_summary_sheet(
             ctx = multiprocessing.get_context('spawn')
             process = ctx.Process(
                 target=run_summary_sheet_generation,
-                args=(generation_record.id, task_params),
+                args=(generation_record.id, task_params),  # generation_record.id is now a string (ObjectId)
                 daemon=False  # Don't kill when main process exits (let it finish)
             )
             process.start()
@@ -5873,7 +5874,7 @@ async def generate_summary_sheet(
                 logger.error(f"❌ Process {generation_record.id} exited immediately with code {process.exitcode}")
                 # Update status to failed
                 await ExcelGeneration.update_status(
-                    db,
+                    None,  # db parameter not needed for MongoDB
                     generation_record.id,
                     ExcelGenerationStatus.FAILED,
                     message=f"Process failed to start (exit code: {process.exitcode})",
@@ -5883,7 +5884,7 @@ async def generate_summary_sheet(
             logger.error(f"❌ Failed to start multiprocessing worker: {process_error}", exc_info=True)
             # Update status to failed
             await ExcelGeneration.update_status(
-                db,
+                None,  # db parameter not needed for MongoDB
                 generation_record.id,
                 ExcelGenerationStatus.FAILED,
                 message="Failed to start background process",

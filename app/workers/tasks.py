@@ -843,8 +843,8 @@ async def run_scheduled_tasks():
         logger.error(f"Error running scheduled tasks: {e}")
 
 
-async def process_receivable_receipt_excel_generation(generation_id: int, params: dict):
-    """Process receivable receipt Excel generation in background - similar to Node.js worker"""
+async def process_receivable_receipt_excel_generation(generation_id, params: dict):
+    """Process receivable receipt Excel generation in background - similar to Node.js worker (MongoDB-based)"""
     try:
         from app.config.database import main_session_factory, create_engines
         from app.models.main.excel_generation import ExcelGeneration, ExcelGenerationStatus
@@ -853,21 +853,26 @@ async def process_receivable_receipt_excel_generation(generation_id: int, params
         import pandas as pd
         import os
         
+        # Convert generation_id to string if it's an integer (for backward compatibility)
+        if isinstance(generation_id, int):
+            generation_id = str(generation_id)
+        
         logger.info(f"[Excel Generation {generation_id}] Starting receivable receipt Excel generation")
         
-        # Ensure engines are created
+        # Ensure engines are created (still needed for MySQL queries)
         if not main_session_factory:
             await create_engines()
         
+        # Update status to processing (MongoDB - no db session needed)
+        await ExcelGeneration.update_status(
+            None,  # db parameter not needed for MongoDB
+            generation_id,
+            ExcelGenerationStatus.PROCESSING,
+            progress=0,
+            message="Starting receivable receipt Excel generation..."
+        )
+        
         async with main_session_factory() as db:
-            # Update status to processing
-            await ExcelGeneration.update_status(
-                db,
-                generation_id,
-                ExcelGenerationStatus.PROCESSING,
-                progress=0,
-                message="Starting receivable receipt Excel generation..."
-            )
             
             start_date = params["start_date"]
             end_date = params["end_date"]
@@ -972,18 +977,18 @@ async def process_receivable_receipt_excel_generation(generation_id: int, params
                     receivables_df = pd.DataFrame(receivable_data)
                     receivables_df.to_excel(writer, sheet_name='ReceivableVsReceipt', index=False)
                 
-                # Update progress
+                # Update progress (MongoDB - no db session needed)
                 await ExcelGeneration.update_status(
-                    db,
+                    None,  # db parameter not needed for MongoDB
                     generation_id,
                     ExcelGenerationStatus.PROCESSING,
                     progress=50,
                     message=f"Processing {len(receivable_data)} records..."
                 )
             
-            # Update final status
+            # Update final status (MongoDB - no db session needed)
             await ExcelGeneration.update_status(
-                db,
+                None,  # db parameter not needed for MongoDB
                 generation_id,
                 ExcelGenerationStatus.COMPLETED,
                 progress=100,
@@ -996,25 +1001,21 @@ async def process_receivable_receipt_excel_generation(generation_id: int, params
     except Exception as e:
         logger.error(f"[Excel Generation {generation_id}] Error: {e}", exc_info=True)
         try:
-            from app.config.database import main_session_factory, create_engines
-            if not main_session_factory:
-                await create_engines()
-            
-            async with main_session_factory() as db:
-                await ExcelGeneration.update_status(
-                    db,
-                    generation_id,
-                    ExcelGenerationStatus.FAILED,
-                    message="Error generating receivable receipt Excel file",
-                    error=str(e)
-                )
+            # Update status to failed (MongoDB - no db session needed)
+            await ExcelGeneration.update_status(
+                None,  # db parameter not needed for MongoDB
+                generation_id,
+                ExcelGenerationStatus.FAILED,
+                message="Error generating receivable receipt Excel file",
+                error=str(e)
+            )
         except Exception as update_error:
             logger.error(f"[Excel Generation {generation_id}] Failed to update error status: {update_error}")
             pass
 
 
-async def process_excel_generation(generation_id: int, params: dict):
-    """Process Excel generation in background - similar to Node.js worker"""
+async def process_excel_generation(generation_id, params: dict):
+    """Process Excel generation in background - similar to Node.js worker (MongoDB-based)"""
     try:
         from app.config.database import main_session_factory, create_engines
         from app.models.main.excel_generation import ExcelGeneration, ExcelGenerationStatus
@@ -1024,21 +1025,26 @@ async def process_excel_generation(generation_id: int, params: dict):
         import pandas as pd
         import os
         
+        # Convert generation_id to string if it's an integer (for backward compatibility)
+        if isinstance(generation_id, int):
+            generation_id = str(generation_id)
+        
         logger.info(f"[Excel Generation {generation_id}] Starting Excel generation")
         
-        # Ensure engines are created
+        # Ensure engines are created (still needed for MySQL queries)
         if not main_session_factory:
             await create_engines()
         
+        # Update status to processing (MongoDB - no db session needed)
+        await ExcelGeneration.update_status(
+            None,  # db parameter not needed for MongoDB
+            generation_id,
+            ExcelGenerationStatus.PROCESSING,
+            progress=0,
+            message="Starting Excel generation..."
+        )
+        
         async with main_session_factory() as db:
-            # Update status to processing
-            await ExcelGeneration.update_status(
-                db,
-                generation_id,
-                ExcelGenerationStatus.PROCESSING,
-                progress=0,
-                message="Starting Excel generation..."
-            )
             
             start_date = params["start_date"]
             end_date = params["end_date"]
@@ -1122,18 +1128,18 @@ async def process_excel_generation(generation_id: int, params: dict):
                     dashboard_records_df = pd.DataFrame([record.to_dict() for record in dashboard_data])
                     dashboard_records_df.to_excel(writer, sheet_name='3PO Dashboard', index=False)
                 
-                # Update progress
+                # Update progress (MongoDB - no db session needed)
                 await ExcelGeneration.update_status(
-                    db,
+                    None,  # db parameter not needed for MongoDB
                     generation_id,
                     ExcelGenerationStatus.PROCESSING,
                     progress=50,
                     message="Excel file generated successfully"
                 )
             
-            # Update final status
+            # Update final status (MongoDB - no db session needed)
             await ExcelGeneration.update_status(
-                db,
+                None,  # db parameter not needed for MongoDB
                 generation_id,
                 ExcelGenerationStatus.COMPLETED,
                 progress=100,
@@ -1146,26 +1152,22 @@ async def process_excel_generation(generation_id: int, params: dict):
     except Exception as e:
         logger.error(f"[Excel Generation {generation_id}] Error: {e}", exc_info=True)
         try:
-            from app.config.database import main_session_factory, create_engines
-            if not main_session_factory:
-                await create_engines()
-            
-            async with main_session_factory() as db:
-                await ExcelGeneration.update_status(
-                    db,
-                    generation_id,
-                    ExcelGenerationStatus.FAILED,
-                    message="Error generating Excel file",
-                    error=str(e)
-                )
+            # Update status to failed (MongoDB - no db session needed)
+            await ExcelGeneration.update_status(
+                None,  # db parameter not needed for MongoDB
+                generation_id,
+                ExcelGenerationStatus.FAILED,
+                message="Error generating Excel file",
+                error=str(e)
+            )
         except Exception as update_error:
             logger.error(f"[Excel Generation {generation_id}] Failed to update error status: {update_error}")
             pass
 
 
-async def process_summary_sheet_generation(generation_id: int, params: dict):
+async def process_summary_sheet_generation(generation_id, params: dict):
     """
-    Process summary sheet Excel generation in background.
+    Process summary sheet Excel generation in background (MongoDB-based).
     Completely isolated from main event loop - runs in dedicated thread pool.
     Similar to Node.js fork() approach - ensures main application never blocks.
     """
@@ -1176,22 +1178,24 @@ async def process_summary_sheet_generation(generation_id: int, params: dict):
         import os
         from app.utils.summary_sheet_helper import generate_summary_sheet_to_file
         
+        # Convert generation_id to string if it's an integer (for backward compatibility)
+        if isinstance(generation_id, int):
+            generation_id = str(generation_id)
+        
         logger.info(f"[Summary Sheet Generation {generation_id}] Starting summary sheet generation")
         
-        # Ensure engines are created
+        # Ensure engines are created (still needed for MySQL queries)
         if not main_session_factory:
             await create_engines()
         
-        # Update status to processing (quick DB operation, then close connection)
-        async with main_session_factory() as db:
-            await ExcelGeneration.update_status(
-                db,
-                generation_id,
-                ExcelGenerationStatus.PROCESSING,
-                progress=0,
-                message="Starting summary sheet generation..."
-            )
-        # DB connection closed here - don't hold it during heavy computation
+        # Update status to processing (MongoDB - no db session needed)
+        await ExcelGeneration.update_status(
+            None,  # db parameter not needed for MongoDB
+            generation_id,
+            ExcelGenerationStatus.PROCESSING,
+            progress=0,
+            message="Starting summary sheet generation..."
+        )
         
         start_date = params["start_date"]
         end_date = params["end_date"]
@@ -1226,16 +1230,14 @@ async def process_summary_sheet_generation(generation_id: int, params: dict):
         executor = get_task_executor()
         loop = asyncio.get_event_loop()
         
-        # Update progress before starting generation
-        async with main_session_factory() as db:
-            await ExcelGeneration.update_status(
-                db,
-                generation_id,
-                ExcelGenerationStatus.PROCESSING,
-                progress=10,
-                message="Starting Excel generation in background thread..."
-            )
-        # DB connection closed - heavy work runs without holding DB connection
+        # Update progress before starting generation (MongoDB - no db session needed)
+        await ExcelGeneration.update_status(
+            None,  # db parameter not needed for MongoDB
+            generation_id,
+            ExcelGenerationStatus.PROCESSING,
+            progress=10,
+            message="Starting Excel generation in background thread..."
+        )
         
         # Run in thread pool executor for true parallel processing
         # This completely blocks only the worker thread, NOT the main event loop
@@ -1257,34 +1259,231 @@ async def process_summary_sheet_generation(generation_id: int, params: dict):
         # This runs in a separate thread - main event loop continues normally
         await loop.run_in_executor(executor, generate_with_progress)
         
-        # Update status to completed (open DB connection only when needed)
-        async with main_session_factory() as db:
-            await ExcelGeneration.update_status(
-                db,
-                generation_id,
-                ExcelGenerationStatus.COMPLETED,
-                progress=100,
-                message="Summary sheet generation completed successfully",
-                filename=filename
-            )
+        # Update status to completed (MongoDB - no db session needed)
+        await ExcelGeneration.update_status(
+            None,  # db parameter not needed for MongoDB
+            generation_id,
+            ExcelGenerationStatus.COMPLETED,
+            progress=100,
+            message="Summary sheet generation completed successfully",
+            filename=filename
+        )
         
         logger.info(f"[Summary Sheet Generation {generation_id}] Generation completed successfully")
             
     except Exception as e:
         logger.error(f"[Summary Sheet Generation {generation_id}] Error: {e}", exc_info=True)
         try:
-            from app.config.database import main_session_factory, create_engines
-            if not main_session_factory:
-                await create_engines()
-            
-            async with main_session_factory() as db:
-                await ExcelGeneration.update_status(
-                    db,
-                    generation_id,
-                    ExcelGenerationStatus.FAILED,
-                    message="Error generating summary sheet",
-                    error=str(e)
-                )
+            # Update status to failed (MongoDB - no db session needed)
+            await ExcelGeneration.update_status(
+                None,  # db parameter not needed for MongoDB
+                generation_id,
+                ExcelGenerationStatus.FAILED,
+                message="Error generating summary sheet",
+                error=str(e)
+            )
         except Exception as update_error:
             logger.error(f"[Summary Sheet Generation {generation_id}] Failed to update error status: {update_error}")
+            pass
+
+
+async def process_report_excel_generation(generation_id, params: dict):
+    """Process custom report Excel generation in background (MongoDB-based)"""
+    try:
+        from app.models.main.excel_generation import ExcelGeneration, ExcelGenerationStatus
+        from app.services.mongodb_service import mongodb_service
+        from datetime import datetime
+        import pandas as pd
+        import os
+        
+        # Convert generation_id to string if it's an integer (for backward compatibility)
+        if isinstance(generation_id, int):
+            generation_id = str(generation_id)
+        
+        logger.info(f"[Report Excel Generation {generation_id}] Starting report Excel generation")
+        
+        # Update status to processing (MongoDB - no db session needed)
+        await ExcelGeneration.update_status(
+            None,  # db parameter not needed for MongoDB
+            generation_id,
+            ExcelGenerationStatus.PROCESSING,
+            progress=10,
+            message="Starting report Excel generation..."
+        )
+        
+        # Extract parameters
+        report_name = params["report_name"]
+        columns = params["columns"]
+        start_date_str = params["start_date"]
+        end_date_str = params["end_date"]
+        start_date_dt_str = params.get("start_date_dt")
+        end_date_dt_str = params.get("end_date_dt")
+        reports_dir = params["reports_dir"]
+        
+        # Parse dates
+        date_formats = ["%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"]
+        start_date_dt = None
+        end_date_dt = None
+        
+        # Try to parse from ISO format first (from start_date_dt_str)
+        if start_date_dt_str:
+            try:
+                start_date_dt = datetime.fromisoformat(start_date_dt_str).date()
+            except:
+                pass
+        
+        if end_date_dt_str:
+            try:
+                end_date_dt = datetime.fromisoformat(end_date_dt_str).date()
+            except:
+                pass
+        
+        # Fallback to parsing from string formats
+        if not start_date_dt:
+            for fmt in date_formats:
+                try:
+                    start_date_dt = datetime.strptime(start_date_str, fmt).date()
+                    break
+                except ValueError:
+                    continue
+        
+        if not end_date_dt:
+            for fmt in date_formats:
+                try:
+                    end_date_dt = datetime.strptime(end_date_str, fmt).date()
+                    break
+                except ValueError:
+                    continue
+        
+        if not start_date_dt or not end_date_dt:
+            raise ValueError(f"Invalid date format. start_date: {start_date_str}, end_date: {end_date_str}")
+        
+        # 🔥 Create reports directory if it doesn't exist (moved from endpoint)
+        os.makedirs(reports_dir, exist_ok=True)
+        
+        # Update progress
+        await ExcelGeneration.update_status(
+            None,
+            generation_id,
+            ExcelGenerationStatus.PROCESSING,
+            progress=20,
+            message="Validating collection and querying data..."
+        )
+        
+        # Query MongoDB collection for data
+        # 🔥 Collection validation happens here - if collection doesn't exist, it will fail gracefully
+        try:
+            # Convert date objects to datetime for MongoDB query
+            start_datetime = datetime.combine(start_date_dt, datetime.min.time())
+            end_datetime = datetime.combine(end_date_dt, datetime.max.time())
+            
+            # Query collection with date filter on order_date field
+            collection_name = report_name.lower().strip()
+            
+            # 🔥 Validate collection exists by trying to query (background worker handles this)
+            data = mongodb_service.query_collection_by_date_range(
+                collection_name=collection_name,
+                columns=columns,
+                start_date=start_datetime,
+                end_date=end_datetime,
+                date_field="order_date"
+            )
+            
+            logger.info(f"[Report Excel Generation {generation_id}] Retrieved {len(data)} record(s) from collection '{collection_name}'")
+            
+        except ValueError as e:
+            error_msg = str(e)
+            if "does not exist" in error_msg or "not found" in error_msg.lower():
+                error_message = f"Collection '{collection_name}' does not exist in MongoDB"
+                await ExcelGeneration.update_status(
+                    None,
+                    generation_id,
+                    ExcelGenerationStatus.FAILED,
+                    message=error_message,
+                    error=error_message
+                )
+                raise ValueError(error_message)
+            else:
+                raise ValueError(error_msg)
+        except ConnectionError as e:
+            error_message = f"MongoDB connection error: {str(e)}"
+            await ExcelGeneration.update_status(
+                None,
+                generation_id,
+                ExcelGenerationStatus.FAILED,
+                message=error_message,
+                error=error_message
+            )
+            raise ConnectionError(error_message)
+        
+        # Update progress
+        await ExcelGeneration.update_status(
+            None,
+            generation_id,
+            ExcelGenerationStatus.PROCESSING,
+            progress=50,
+            message=f"Processing {len(data)} record(s)..."
+        )
+        
+        # Create DataFrame from MongoDB data
+        if data:
+            # Create DataFrame with data
+            df = pd.DataFrame(data)
+            # Ensure columns are in the order specified in request
+            # Only include columns that exist in the data
+            available_columns = [col for col in columns if col in df.columns]
+            if available_columns:
+                df = df[available_columns]
+            else:
+                # If none of the requested columns exist, use all available columns
+                logger.warning(f"[Report Excel Generation {generation_id}] None of the requested columns found, using all available columns")
+        else:
+            # No data found, create empty DataFrame with specified columns
+            df = pd.DataFrame(columns=columns)
+            logger.info(f"[Report Excel Generation {generation_id}] No data found for the specified date range")
+        
+        # Update progress
+        await ExcelGeneration.update_status(
+            None,
+            generation_id,
+            ExcelGenerationStatus.PROCESSING,
+            progress=80,
+            message="Generating Excel file..."
+        )
+        
+        # Generate filename: report_name_start_date_to_end_date_generation_id.xlsx
+        filename = f"{report_name}_{start_date_dt.strftime('%Y-%m-%d')}_to_{end_date_dt.strftime('%Y-%m-%d')}_{generation_id}.xlsx"
+        filepath = os.path.join(reports_dir, filename)
+        
+        # Create Excel file
+        with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
+            df.to_excel(writer, sheet_name='Report', index=False)
+        
+        logger.info(f"[Report Excel Generation {generation_id}] Generated Excel file: {filename} with {len(df)} row(s) and columns: {list(df.columns)}")
+        
+        # Update final status
+        await ExcelGeneration.update_status(
+            None,
+            generation_id,
+            ExcelGenerationStatus.COMPLETED,
+            progress=100,
+            message="Excel generation completed successfully",
+            filename=filename
+        )
+        
+        logger.info(f"[Report Excel Generation {generation_id}] Generation completed successfully")
+        
+    except Exception as e:
+        logger.error(f"[Report Excel Generation {generation_id}] Error: {e}", exc_info=True)
+        try:
+            # Update status to failed (MongoDB - no db session needed)
+            await ExcelGeneration.update_status(
+                None,  # db parameter not needed for MongoDB
+                generation_id,
+                ExcelGenerationStatus.FAILED,
+                message="Error generating report Excel file",
+                error=str(e)[:500]  # Limit error message length
+            )
+        except Exception as update_error:
+            logger.error(f"[Report Excel Generation {generation_id}] Failed to update error status: {update_error}")
             pass
