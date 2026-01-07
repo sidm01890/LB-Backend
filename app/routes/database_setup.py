@@ -253,6 +253,28 @@ async def list_all_uploaded_files(
     return await db_setup_controller.list_all_uploaded_files()
 
 
+class HeadersStatusResponse(BaseModel):
+    """Response model for headers status check"""
+    status: int = Field(..., description="HTTP status code", example=200)
+    message: str = Field(..., description="Response message")
+    data: Dict[str, Any] = Field(..., description="Response data")
+
+
+@router.get(
+    "/setup/collection/{collection_name}/headers-status",
+    tags=["Database Setup"],
+    summary="Check if headers file exists for a collection",
+    response_model=HeadersStatusResponse,
+    status_code=status.HTTP_200_OK
+)
+async def check_collection_headers_status(
+    collection_name: str,
+    current_user: UserDetails = Depends(get_current_user)
+):
+    """Check if headers file has been uploaded for a collection"""
+    return await db_setup_controller.check_collection_headers_status(collection_name)
+
+
 # ============================================================================
 # REPORT FORMULAS ROUTES
 # ============================================================================
