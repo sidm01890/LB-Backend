@@ -487,4 +487,49 @@ class DBSetupController:
                 status_code=500,
                 detail=f"Failed to list uploaded files: {str(e)}"
             )
+    
+    async def check_collection_headers_status(self, collection_name: str) -> Dict[str, Any]:
+        """
+        Check if headers file has been uploaded for a collection
+        
+        Args:
+            collection_name: Name of the collection to check
+        
+        Returns:
+            Dictionary with status and headers information
+        
+        Raises:
+            HTTPException: If MongoDB is not connected
+        """
+        if not collection_name or not collection_name.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="Collection name is required and cannot be empty"
+            )
+        
+        try:
+            headers_info = mongodb_service.check_collection_headers(collection_name.strip())
+            
+            return {
+                "status": 200,
+                "message": f"Headers {'exist' if headers_info['has_headers'] else 'do not exist'} for collection '{collection_name}'",
+                "data": {
+                    "has_headers": headers_info["has_headers"],
+                    "headers_count": headers_info["headers_count"],
+                    "collection_name": headers_info["collection_name"],
+                    "mongodb_connected": mongodb_service.is_connected()
+                }
+            }
+        
+        except ConnectionError as e:
+            raise HTTPException(
+                status_code=503,
+                detail=f"MongoDB connection error: {str(e)}"
+            )
+        except Exception as e:
+            logger.error(f"❌ Error checking headers status for collection '{collection_name}': {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to check headers status: {str(e)}"
+            )
 

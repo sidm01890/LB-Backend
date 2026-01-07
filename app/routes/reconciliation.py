@@ -6711,6 +6711,7 @@ class DashboardSalesRequest(BaseModel):
     """Request model for dashboard sales query"""
     model_config = ConfigDict(populate_by_name=True)
     
+    tender: str  # Tender name (e.g., "zomato")
     start_date: str = Field(..., alias="startDate")
     end_date: str = Field(..., alias="endDate")
     stores: Optional[List[str]] = None
@@ -7115,4 +7116,145 @@ async def get_dashboard_sales(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error querying dashboard sales: {str(e)}"
+        )
+
+
+@router.post("/new-dashboard")
+async def get_new_dashboard(
+    request_data: DashboardSalesRequest,
+    db: AsyncSession = Depends(get_main_db),
+    current_user: UserDetails = Depends(get_current_user)
+):
+    """
+    Get new dashboard data - aggregates total_sales from tender_dashboard collection
+    """
+    try:
+        from app.services.mongodb_service import mongodb_service
+        
+        logger.info("===========================================")
+        logger.info("🚀 /new-dashboard API IS HIT")
+        logger.info("===========================================")
+        logger.info(f"Request: tender={request_data.tender}, startDate={request_data.start_date}, endDate={request_data.end_date}")
+        
+        # Validate request data
+        if not request_data.tender:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Tender is required"
+            )
+        
+        if not request_data.start_date or not request_data.end_date:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Start date and end date are required"
+            )
+        
+        # Check MongoDB connection
+        if not mongodb_service.is_connected() or mongodb_service.db is None:
+            logger.error("❌ MongoDB not connected")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="MongoDB service is not available"
+            )
+        
+        # Build dashboard collection name: {tender}_dashboard
+        tender_lower = request_data.tender.lower()
+        dashboard_collection_name = f"{tender_lower}_dashboard"
+        
+        logger.info(f"📊 Querying collection: '{dashboard_collection_name}'")
+        
+        # Get collection
+        dashboard_collection = mongodb_service.db[dashboard_collection_name]
+        
+        # Check if collection exists
+        existing_collections = mongodb_service.db.list_collection_names()
+        if dashboard_collection_name not in existing_collections:
+            logger.warning(f"⚠️ Collection '{dashboard_collection_name}' does not exist")
+            return {
+                "success": True,
+                "message": f"Collection '{dashboard_collection_name}' not found",
+                "data": {
+                    "total_sales": 0,
+                    "tender": request_data.tender,
+                    "start_date": request_data.start_date,
+                    "end_date": request_data.end_date,
+                    "document_count": 0
+                }
+            }
+        
+        # Parse date strings to datetime objects
+        try:
+            start_datetime = datetime.strptime(request_data.start_date, "%Y-%m-%d %H:%M:%S")
+            end_datetime = datetime.strptime(request_data.end_date, "%Y-%m-%d %H:%M:%S")
+        except ValueError as e:
+            logger.error(f"❌ Invalid date format: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid date format. Expected: 'YYYY-MM-DD HH:MM:SS'. Error: {str(e)}"
+            )
+        
+        # MongoDB aggregation pipeline to sum total_sales
+        pipeline = [
+            {
+                "$match": {
+                    "order_date": {
+                        "$gte": start_datetime,
+                        "$lte": end_datetime
+                    }
+                }
+            },
+            {
+                "$group": {
+                    "_id": None,
+                    "total_sales": {
+                        "$sum": {
+                            "$ifNull": ["$total_sales", 0]  # Treat null/undefined as 0
+                        }
+                    },
+                    "document_count": {"$sum": 1}
+                }
+            }
+        ]
+        
+        logger.info(f"📊 Executing aggregation pipeline on '{dashboard_collection_name}'")
+        logger.info(f"Date range: {start_datetime} to {end_datetime}")
+        
+        # Execute aggregation
+        result = list(dashboard_collection.aggregate(pipeline))
+        
+        # Extract results
+        if result and len(result) > 0:
+            total_sales = result[0].get("total_sales", 0)
+            document_count = result[0].get("document_count", 0)
+        else:
+            # No documents in date range
+            total_sales = 0
+            document_count = 0
+        
+        logger.info(f"✅ Aggregation complete: total_sales={total_sales}, document_count={document_count}")
+        
+        # Build response
+        response_data = {
+            "success": True,
+            "message": "Dashboard data fetched successfully",
+            "data": {
+                "total_sales": float(total_sales) if total_sales else 0.0,
+                "tender": request_data.tender,
+                "start_date": request_data.start_date,
+                "end_date": request_data.end_date,
+                "document_count": document_count
+            }
+        }
+        
+        logger.info(f"✅ New dashboard query successful")
+        
+        return response_data
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error in new dashboard: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error in new dashboard: {str(e)}"
         )
