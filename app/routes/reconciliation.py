@@ -2255,23 +2255,87 @@ async def get_three_po_dashboard_data(
         instore_row = instore_result.first()
         instore_total = format_number(instore_row.instoreSales if instore_row else 0)
         
-        # Prepare final response
+        # HARDCODED STATIC VALUES FOR TESTING
+        # Prepare final response with hardcoded dummy data
         response = {
-            **summary_data_numbers,
-            "posFreebies": 0,
-            "threePOFreebies": 0,
-            "posVsThreePO": 0,
-            "booked": 0,
-            "promo": 0,
-            "deltaPromo": 0,
-            "allThreePOCharges": 0,
-            "allPOSCharges": 0,
-            "threePOData": tender_data,
-            "tenderWisePOSData": tender_wise_pos_data,
-            "instoreTotal": instore_total
+            "posSales": 150000.0,
+            "posReceivables": 145000.0,
+            "posCommission": 5000.0,
+            "posCharges": 3000.0,
+            "posDiscounts": 2000,
+            "threePOSales": 200000.0,
+            "threePOReceivables": 195000.0,
+            "threePOCommission": 8000.0,
+            "threePOCharges": 5000.0,
+            "threePODiscounts": 3000,
+            "reconciled": 500,
+            "receivablesVsReceipts": 5000.0,
+            "posFreebies": 100,
+            "threePOFreebies": 150,
+            "posVsThreePO": 50000,
+            "booked": 450,
+            "promo": 250,
+            "deltaPromo": 50,
+            "allThreePOCharges": 5000,
+            "allPOSCharges": 3000,
+            "threePOData": [
+                {
+                    "posSales": 150000.0,
+                    "posReceivables": 145000.0,
+                    "posCommission": 5000.0,
+                    "posCharges": 3000.0,
+                    "posDiscounts": 2000,
+                    "threePOSales": 200000.0,
+                    "threePOReceivables": 195000.0,
+                    "threePOCommission": 8000.0,
+                    "threePOCharges": 5000.0,
+                    "threePODiscounts": 3000,
+                    "reconciled": 500,
+                    "receivablesVsReceipts": 5000.0,
+                    "posVsThreePO": 50000.0,
+                    "posFreebies": 100,
+                    "threePOFreebies": 150,
+                    "booked": 450,
+                    "promo": 250,
+                    "deltaPromo": 50,
+                    "allThreePOCharges": 5000,
+                    "allPOSCharges": 3000,
+                    "totalReceivables": 195000,
+                    "totalReceipts": 190000,
+                    "tenderName": "ZOMATO"
+                }
+            ],
+            "tenderWisePOSData": [
+                {
+                    "posSales": 150000.0,
+                    "posReceivables": 145000.0,
+                    "posCommission": 5000.0,
+                    "posCharges": 3000.0,
+                    "posDiscounts": 2000,
+                    "threePOSales": 200000.0,
+                    "threePOReceivables": 195000.0,
+                    "threePOCommission": 8000.0,
+                    "threePOCharges": 5000.0,
+                    "threePODiscounts": 3000,
+                    "reconciled": 500,
+                    "receivablesVsReceipts": 5000.0,
+                    "posVsThreePO": 50000.0,
+                    "posFreebies": 100,
+                    "threePOFreebies": 150,
+                    "booked": 450,
+                    "promo": 250,
+                    "deltaPromo": 50,
+                    "allThreePOCharges": 5000,
+                    "allPOSCharges": 3000,
+                    "totalReceivables": 195000.0,
+                    "totalReceipts": 190000,
+                    "tenderName": "ZOMATO"
+                }
+            ],
+            "instoreTotal": 150000
         }
         
-        logger.info("✅ API Request Completed Successfully")
+        logger.info("✅ API Request Completed Successfully (Returning Hardcoded Static Values)")
         
         return {
             "success": True,
