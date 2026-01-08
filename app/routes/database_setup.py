@@ -819,3 +819,168 @@ async def generate_report_excel(
             detail=f"Failed to start Excel generation: {str(e)}"
         )
 
+
+class GenerateSummaryReportExcelRequest(BaseModel):
+    """Request model for generating summary report Excel file"""
+    report_name: str = Field(..., description="Name of the report", example="zomato_vs_pos", min_length=1)
+    start_date: str = Field(..., description="Start date in YYYY-MM-DD format", example="2024-01-01")
+    end_date: str = Field(..., description="End date in YYYY-MM-DD format", example="2024-01-31")
+
+
+@router.post(
+    "/reports/generate-summary-excel",
+    tags=["Report Formulas"],
+    summary="Generate summary Excel file for report with auto-selected columns in sequence (async background processing)",
+    status_code=status.HTTP_200_OK
+)
+async def generate_summary_report_excel(
+    request: GenerateSummaryReportExcelRequest = Body(...),
+    current_user: UserDetails = Depends(get_current_user)
+):
+    """
+    Generate a summary Excel file for a report with automatically selected columns in sequence.
+    Returns immediately with generationId. Excel generation happens in background.
+    
+    The summary report will:
+    1. Include all base columns (non-delta columns)
+    2. For each delta column: include first_formula, second_formula, delta_column_name in sequence
+    3. Include reconciliation_status and reason columns at the end
+    4. Create an additional "Summary" sheet with date range, total orders, and reconciliation counts
+    
+    Inputs:
+    1. report_name: Name of the report (matches MongoDB collection)
+    2. start_date: Start date (YYYY-MM-DD)
+    3. end_date: End date (YYYY-MM-DD)
+    
+    Output:
+    - Returns generationId immediately
+    - Excel file generated in background with two sheets: "Report" and "Summary"
+    - Status can be checked via /api/reconciliation/generation-status
+    """
+    logger = logging.getLogger(__name__)
+    
+    try:
+        from app.models.main.excel_generation import ExcelGeneration, ExcelGenerationStatus
+        
+        # Validate date format
+        date_formats = ["%Y-%m-%d", "%Y-%m-%d %H:%M:%S"]
+        start_date_dt = None
+        end_date_dt = None
+        
+        for fmt in date_formats:
+            try:
+                start_date_dt = datetime.strptime(request.start_date, fmt).date()
+                break
+            except ValueError:
+                continue
+        
+        for fmt in date_formats:
+            try:
+                end_date_dt = datetime.strptime(request.end_date, fmt).date()
+                break
+            except ValueError:
+                continue
+        
+        if not start_date_dt or not end_date_dt:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid date format. Expected: YYYY-MM-DD or YYYY-MM-DD HH:MM:SS"
+            )
+        
+        if start_date_dt > end_date_dt:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Start date must be before or equal to end date"
+            )
+        
+        collection_name = request.report_name.lower().strip()
+        reports_dir = "reports"
+        
+        # Convert date objects to datetime for MongoDB
+        start_datetime = datetime.combine(start_date_dt, datetime.min.time())
+        end_datetime = datetime.combine(end_date_dt, datetime.max.time())
+        
+        # Create MongoDB record
+        store_code_label = f"SummaryReport_{request.report_name}"
+        generation_record = await ExcelGeneration.create(
+            None,  # db parameter not needed for MongoDB
+            store_code=store_code_label,
+            start_date=start_datetime,
+            end_date=end_datetime,
+            status=ExcelGenerationStatus.PENDING,
+            progress=0,
+            message="Initializing summary report generation...",
+            metadata={
+                "report_name": request.report_name,
+                "report_type": "summary"
+            }
+        )
+        
+        # Use multiprocessing.Process for isolation
+        import multiprocessing
+        from app.workers.process_worker import run_summary_report_excel_generation
+        
+        task_params = {
+            "report_name": request.report_name,
+            "start_date": request.start_date,
+            "end_date": request.end_date,
+            "start_date_dt": start_date_dt.isoformat(),
+            "end_date_dt": end_date_dt.isoformat(),
+            "reports_dir": reports_dir
+        }
+        
+        # Start separate process
+        try:
+            ctx = multiprocessing.get_context('spawn')
+            process = ctx.Process(
+                target=run_summary_report_excel_generation,
+                args=(generation_record.id, task_params),
+                daemon=False
+            )
+            process.start()
+            logger.info(f"✅ Started multiprocessing worker for summary report generation {generation_record.id}, PID: {process.pid}")
+            
+            if not process.is_alive() and process.exitcode is not None:
+                logger.error(f"❌ Process {generation_record.id} exited immediately with code {process.exitcode}")
+                await ExcelGeneration.update_status(
+                    None,
+                    generation_record.id,
+                    ExcelGenerationStatus.FAILED,
+                    message="Process failed to start",
+                    error=f"Process exited with code {process.exitcode}"
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Failed to start summary report generation process"
+                )
+        except Exception as process_error:
+            logger.error(f"❌ Error starting process: {process_error}", exc_info=True)
+            await ExcelGeneration.update_status(
+                None,
+                generation_record.id,
+                ExcelGenerationStatus.FAILED,
+                message="Failed to start generation process",
+                error=str(process_error)
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to start summary report generation: {str(process_error)}"
+            )
+        
+        logger.info(f"✅ Summary report generation process started: {generation_record.id} (PID: {process.pid})")
+        return {
+            "success": True,
+            "message": "Summary report generation started",
+            "generationId": generation_record.id,
+            "status": "PENDING"
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error starting summary report generation: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to start summary report generation: {str(e)}"
+        )
+
