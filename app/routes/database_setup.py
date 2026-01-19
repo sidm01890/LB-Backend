@@ -21,6 +21,7 @@ from app.controllers.formulas_controller import FormulasController
 from app.services.mongodb_service import mongodb_service
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 # Initialize controllers
 db_setup_controller = DBSetupController()
@@ -982,5 +983,197 @@ async def generate_report_excel(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to start Excel generation: {str(e)}"
+        )
+
+
+# ============================================================================
+# DASHBOARD API MAPPING KEYS ROUTES
+# ============================================================================
+
+class SaveMappingKeysRequest(BaseModel):
+    """Request model for saving dashboard API mapping keys"""
+    name: str = Field(..., description="Report name", example="devyani_posvszom")
+    is_3PO: bool = Field(..., description="Whether this is a 3PO report", example=True)
+    mapping_keys: List[Dict[str, str]] = Field(
+        ...,
+        description="Array of mapping objects with 3po_key and collection_key",
+        example=[
+            {"3po_key": "tenderName", "collection_key": "tender_name"},
+            {"3po_key": "posSales", "collection_key": "pos_sales"}
+        ]
+    )
+
+
+class SaveMappingKeysResponse(BaseModel):
+    """Response model for saving mapping keys"""
+    status: int = Field(..., description="HTTP status code", example=200)
+    message: str = Field(..., description="Response message")
+    data: Dict[str, Any] = Field(..., description="Response data")
+
+
+@router.get(
+    "/setup/collection/dashboard_api_mapping_keys/{report_name}",
+    tags=["Database Setup"],
+    summary="Get dashboard API mapping keys for a report",
+    response_model=SaveMappingKeysResponse,
+    status_code=status.HTTP_200_OK
+)
+async def get_dashboard_api_mapping_keys(
+    report_name: str,
+    current_user: UserDetails = Depends(get_current_user)
+):
+    """
+    Get mapping keys for a report from the dashboard_api_mapping_keys collection.
+    Returns the mapping data if it exists, or an empty response if not found.
+    """
+    from app.config.mongodb import get_mongodb_collection
+    
+    if not mongodb_service.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="MongoDB is not connected"
+        )
+    
+    try:
+        collection = get_mongodb_collection("dashboard_api_mapping_keys")
+        document = collection.find_one({"name": report_name})
+        
+        if document:
+            # Convert ObjectId to string if present
+            if "_id" in document:
+                document["_id"] = str(document["_id"])
+            # Convert datetime to ISO format if present
+            if "created_at" in document and hasattr(document["created_at"], "isoformat"):
+                document["created_at"] = document["created_at"].isoformat()
+            if "updated_at" in document and hasattr(document["updated_at"], "isoformat"):
+                document["updated_at"] = document["updated_at"].isoformat()
+            
+            logger.info(f"✅ Retrieved mapping keys for report: {report_name}")
+            return {
+                "status": 200,
+                "message": f"Mapping keys retrieved successfully for report '{report_name}'",
+                "data": document
+            }
+        else:
+            # Return empty response if not found
+            return {
+                "status": 200,
+                "message": f"No mapping keys found for report '{report_name}'",
+                "data": {
+                    "name": report_name,
+                    "is_3PO": False,
+                    "mapping_keys": []
+                }
+            }
+    
+    except Exception as e:
+        logger.error(f"❌ Error getting mapping keys for '{report_name}': {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get mapping keys: {str(e)}"
+        )
+
+
+@router.post(
+    "/setup/collection/dashboard_api_mapping_keys/save",
+    tags=["Database Setup"],
+    summary="Save dashboard API mapping keys",
+    response_model=SaveMappingKeysResponse,
+    status_code=status.HTTP_200_OK
+)
+async def save_dashboard_api_mapping_keys(
+    request: SaveMappingKeysRequest = Body(...),
+    current_user: UserDetails = Depends(get_current_user)
+):
+    """
+    Save or update mapping keys for a report in the dashboard_api_mapping_keys collection.
+    If a document with the same name exists, it will be updated. Otherwise, a new document will be created.
+    The collection will be created if it doesn't exist (without a processed version).
+    """
+    from app.config.mongodb import get_mongodb_collection, get_mongodb_database
+    
+    if not mongodb_service.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="MongoDB is not connected"
+        )
+    
+    try:
+        # Check if collection exists, if not create it (without processed version)
+        db = get_mongodb_database()
+        collection_name = "dashboard_api_mapping_keys"
+        existing_collections = db.list_collection_names()
+        
+        if collection_name not in existing_collections:
+            # Create collection by inserting and deleting a temporary document
+            collection = get_mongodb_collection(collection_name)
+            temp_doc = {"_temp": True, "created_at": datetime.utcnow()}
+            result = collection.insert_one(temp_doc)
+            collection.delete_one({"_id": result.inserted_id})
+            logger.info(f"✅ Created collection '{collection_name}' (without processed version)")
+        
+        # Ensure this collection is NOT in raw_data_collection
+        # Remove it if it exists there (since this is a special collection that shouldn't be tracked there)
+        try:
+            raw_data_collection = get_mongodb_collection("raw_data_collection")
+            existing_entry = raw_data_collection.find_one({"collection_name": collection_name})
+            if existing_entry:
+                raw_data_collection.delete_one({"collection_name": collection_name})
+                logger.info(f"✅ Removed '{collection_name}' from raw_data_collection (should not be tracked there)")
+        except Exception as e:
+            logger.debug(f"Could not check/remove from raw_data_collection: {e}")
+        
+        collection = get_mongodb_collection(collection_name)
+        
+        # Prepare the document
+        document = {
+            "name": request.name,
+            "is_3PO": request.is_3PO,
+            "mapping_keys": request.mapping_keys,
+            "updated_at": datetime.utcnow()
+        }
+        
+        # Check if document with this name already exists
+        existing_doc = collection.find_one({"name": request.name})
+        
+        if existing_doc:
+            # Update existing document
+            collection.update_one(
+                {"name": request.name},
+                {"$set": document}
+            )
+            logger.info(f"✅ Updated mapping keys for report: {request.name}")
+            return {
+                "status": 200,
+                "message": f"Mapping keys updated successfully for report '{request.name}'",
+                "data": {
+                    "name": request.name,
+                    "is_3PO": request.is_3PO,
+                    "mapping_keys_count": len(request.mapping_keys),
+                    "mongodb_connected": True
+                }
+            }
+        else:
+            # Insert new document
+            document["created_at"] = datetime.utcnow()
+            result = collection.insert_one(document)
+            logger.info(f"✅ Saved mapping keys for report: {request.name} (ID: {result.inserted_id})")
+            return {
+                "status": 200,
+                "message": f"Mapping keys saved successfully for report '{request.name}'",
+                "data": {
+                    "name": request.name,
+                    "is_3PO": request.is_3PO,
+                    "mapping_keys_count": len(request.mapping_keys),
+                    "document_id": str(result.inserted_id),
+                    "mongodb_connected": True
+                }
+            }
+    
+    except Exception as e:
+        logger.error(f"❌ Error saving mapping keys for '{request.name}': {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to save mapping keys: {str(e)}"
         )
 

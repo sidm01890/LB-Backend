@@ -1873,10 +1873,11 @@ async def get_three_po_dashboard_data(
     db: AsyncSession = Depends(get_main_db),  # Using main_db for reconciliation tables
     current_user: UserDetails = Depends(get_current_user)
 ):
-    """Get 3PO dashboard data - matches Node.js implementation"""
+    """Get 3PO dashboard data from MongoDB report collections"""
     try:
-        from sqlalchemy.sql import text
-        from datetime import datetime, date
+        from datetime import datetime
+        from app.services.mongodb_service import mongodb_service
+        from app.config.mongodb import get_mongodb_collection
         
         logger.info("===========================================")
         logger.info("🚀 /threePODashboardData API IS HIT")
@@ -1892,81 +1893,290 @@ async def get_three_po_dashboard_data(
                 detail="Missing required parameters: startDate, endDate, or stores"
             )
         
+        # Check MongoDB connection
+        if not mongodb_service.is_connected():
+            logger.error("❌ MongoDB not connected")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="MongoDB is not connected"
+            )
+        
         # Convert date strings to datetime objects
         start_datetime = datetime.strptime(startDate, "%Y-%m-%d %H:%M:%S")
         end_datetime = datetime.strptime(endDate, "%Y-%m-%d %H:%M:%S")
         
-        tenders = ["ZOMATO"]
+        # Step 1: Get all report names from formulas collection
+        logger.info("📊 Step 1: Getting all report names from formulas collection")
+        formulas_collection = get_mongodb_collection("formulas")
         
-        # Build dynamic IN clause for stores
-        def build_store_params(stores_list, prefix="store"):
-            placeholders = ",".join([f":{prefix}_{i}" for i in range(len(stores_list))])
-            params = {f"{prefix}_{i}": store for i, store in enumerate(stores_list)}
-            return placeholders, params
+        if not mongodb_service.collection_exists("formulas"):
+            logger.warning("⚠️ Formulas collection does not exist")
+            report_names = []
+        else:
+            # Get all report names
+            formulas_docs = list(formulas_collection.find({}, {"report_name": 1}))
+            report_names = [doc.get("report_name") for doc in formulas_docs if doc.get("report_name")]
+            logger.info(f"📋 Found {len(report_names)} report name(s): {report_names}")
         
-        # Helper function to format SQL for readable logging (security: only for display)
-        def format_sql_for_logging(query_str, params_dict):
-            """Format SQL query with actual parameter values for logging only.
-            This is for readability - actual queries remain parameterized for security."""
-            formatted_query = query_str
-            # Sort keys by length (longest first) to avoid partial replacements
-            # e.g., replace :store_10 before :store_1
-            sorted_keys = sorted(params_dict.keys(), key=lambda k: (-len(k), k))
-            for key in sorted_keys:
-                value = params_dict[key]
-                # Handle different value types
-                if isinstance(value, str):
-                    formatted_value = f"'{value}'"
-                elif isinstance(value, datetime):
-                    formatted_value = f"'{value}'"
-                elif isinstance(value, date):
-                    formatted_value = f"'{value}'"
-                elif value is None:
-                    formatted_value = "NULL"
+        # Step 2: Aggregate data from all report collections
+        logger.info("📊 Step 2: Aggregating data from report collections")
+        total_pos_payment = 0.0
+        total_net_amount = 0.0
+        
+        for report_name in report_names:
+            if not report_name:
+                continue
+            
+            report_name_lower = report_name.lower().strip()
+            
+            # Check if collection exists
+            if not mongodb_service.collection_exists(report_name_lower):
+                logger.warning(f"⚠️ Collection '{report_name_lower}' does not exist, skipping")
+                continue
+            
+            try:
+                # Get the report collection
+                report_collection = mongodb_service.db[report_name_lower]
+                
+                # MongoDB aggregation pipeline
+                # Filter by order_date field and sum pos_payment and net_amount
+                pipeline = [
+                    {
+                        "$match": {
+                            "order_date": {
+                                "$gte": start_datetime,
+                                "$lte": end_datetime
+                            }
+                        }
+                    },
+                    {
+                        "$group": {
+                            "_id": None,
+                            "pos_payment_sum": {
+                                "$sum": {
+                                    "$ifNull": ["$pos_payment", 0]  # Treat missing/null as 0
+                                }
+                            },
+                            "net_amount_sum": {
+                                "$sum": {
+                                    "$ifNull": ["$net_amount", 0]  # Treat missing/null as 0
+                                }
+                            }
+                        }
+                    }
+                ]
+                
+                logger.info(f"📊 Aggregating data from collection '{report_name_lower}'")
+                logger.info(f"   Date range: {start_datetime} to {end_datetime}")
+                
+                # Execute aggregation
+                result = list(report_collection.aggregate(pipeline))
+                
+                if result and len(result) > 0:
+                    report_pos_payment = float(result[0].get("pos_payment_sum", 0) or 0)
+                    report_net_amount = float(result[0].get("net_amount_sum", 0) or 0)
+                    
+                    total_pos_payment += report_pos_payment
+                    total_net_amount += report_net_amount
+                    
+                    logger.info(f"   ✅ Collection '{report_name_lower}': pos_payment={report_pos_payment}, net_amount={report_net_amount}")
                 else:
-                    formatted_value = str(value)
-                # Replace all occurrences of the parameter
-                formatted_query = formatted_query.replace(f":{key}", formatted_value)
-            return formatted_query.strip()
+                    # Empty collection or no matching documents
+                    logger.info(f"   ℹ️ Collection '{report_name_lower}': No data found (returning 0)")
+                    
+            except Exception as e:
+                logger.error(f"❌ Error processing collection '{report_name_lower}': {e}")
+                # Continue with next collection
+                continue
         
-        # Query 1: Summary Data Query
-        # NOTE: Using CASE WHEN to filter out negative amounts (refunds/adjustments)
-        # Only positive amounts are included in sales calculations
-        logger.info("📊 QUERY 1: Summary Data Query")
-        stores_placeholder_1, stores_params_1 = build_store_params(stores, "store_1")
-        summary_query_str = f"""
-            SELECT 
-                SUM(CASE WHEN pos_net_amount > 0 THEN pos_net_amount ELSE 0 END) AS posSales,
-                SUM(CASE WHEN pos_final_amount > 0 THEN pos_final_amount ELSE 0 END) AS posReceivables,
-                SUM(CASE WHEN pos_commission_value > 0 THEN pos_commission_value ELSE 0 END) AS posCommission,
-                SUM(CASE WHEN pos_tax_paid_by_customer > 0 THEN pos_tax_paid_by_customer ELSE 0 END) AS posCharges,
-                SUM(0) AS posDiscounts,
-                SUM(CASE WHEN zomato_net_amount > 0 THEN zomato_net_amount ELSE 0 END) AS threePOSales,
-                SUM(CASE WHEN zomato_final_amount > 0 THEN zomato_final_amount ELSE 0 END) AS threePOReceivables,
-                SUM(CASE WHEN zomato_commission_value > 0 THEN zomato_commission_value ELSE 0 END) AS threePOCommission,
-                SUM(CASE WHEN zomato_tax_paid_by_customer > 0 THEN zomato_tax_paid_by_customer ELSE 0 END) AS threePOCharges,
-                SUM(0) AS threePODiscounts,
-                SUM(CASE WHEN reconciled_amount > 0 THEN reconciled_amount ELSE 0 END) AS reconciled,
-                SUM(CASE WHEN pos_final_amount > 0 THEN pos_final_amount ELSE 0 END) AS receivablesVsReceipts
-            FROM zomato_vs_pos_summary
-            WHERE order_date BETWEEN :start_date AND :end_date
-            AND store_name IN ({stores_placeholder_1})
-            AND pos_order_id IS NOT NULL
-            AND pos_net_amount > 0
-        """
-        summary_query = text(summary_query_str)
+        logger.info(f"📊 Total aggregated: pos_payment={total_pos_payment}, net_amount={total_net_amount}")
         
-        params_1 = {
-            "start_date": start_datetime.date(),
-            "end_date": end_datetime.date(),
-            **stores_params_1
-        }
+        # Step 3: Get tender-wise data from devyani_posvszom collection
+        logger.info("📊 Step 3: Getting tender-wise data from devyani_posvszom collection")
+        tender_wise_data = []
         
-        # Log formatted query for readability
-        logger.info("📝 Formatted SQL (for logging only):\n%s", format_sql_for_logging(summary_query_str, params_1))
-        
-        summary_result = await db.execute(summary_query, params_1)
-        summary_row = summary_result.first()
+        if mongodb_service.collection_exists("devyani_posvszom"):
+            try:
+                posvszom_collection = get_mongodb_collection("devyani_posvszom")
+                
+                # Aggregation pipeline to group by tender_name and sum all fields
+                pipeline = [
+                    {
+                        "$match": {
+                            "order_date": {
+                                "$gte": start_datetime,
+                                "$lte": end_datetime
+                            }
+                        }
+                    },
+                    {
+                        "$group": {
+                            "_id": "$tender_name",  # Group by tender_name (ZOMATO, SWIGGY, etc.)
+                            
+                            # POS Fields
+                            "posSales": {
+                                "$sum": {"$ifNull": ["$pos_payment", 0]}
+                            },
+                            "posReceivables": {
+                                "$sum": {"$ifNull": ["$pos_final_amount", 0]}  # Using pos_final_amount for POS receivables
+                            },
+                            "posCommission": {
+                                "$sum": {"$ifNull": ["$pos_commission", 0]}
+                            },
+                            "posCharges": {
+                                "$sum": {"$ifNull": ["$pos_charges", 0]}
+                            },
+                            "posDiscounts": {
+                                "$sum": {"$ifNull": ["$pos_discounts", 0]}
+                            },
+                            "posFreebies": {
+                                "$sum": {"$ifNull": ["$pos_freebies", 0]}
+                            },
+                            
+                            # 3PO/Aggregator Fields
+                            "threePOSales": {
+                                "$sum": {"$ifNull": ["$net_amount", 0]}
+                            },
+                            "threePOReceivables": {
+                                "$sum": {"$ifNull": ["$final_amount", 0]}  # Using final_amount for 3PO receivables
+                            },
+                            "threePOCommission": {
+                                "$sum": {"$ifNull": ["$three_po_commission", 0]}
+                            },
+                            "threePOCharges": {
+                                "$sum": {"$ifNull": ["$three_po_charges", 0]}
+                            },
+                            "threePODiscounts": {
+                                "$sum": {"$ifNull": ["$three_po_discounts", 0]}
+                            },
+                            "threePOFreebies": {
+                                "$sum": {"$ifNull": ["$three_po_freebies", 0]}
+                            },
+                            
+                            # Comparison Fields
+                            "posVsThreePO": {
+                                "$sum": {"$ifNull": ["$pos_vs_three_po", 0]}
+                            },
+                            "receivablesVsReceipts": {
+                                "$sum": {"$ifNull": ["$receivables_vs_receipts", 0]}
+                            },
+                            
+                            # Other Fields
+                            "reconciled": {
+                                "$sum": {"$ifNull": ["$reconciled", 0]}
+                            },
+                            "promo": {
+                                "$sum": {"$ifNull": ["$promo", 0]}
+                            },
+                            "totalReceivables": {
+                                "$sum": {"$ifNull": ["$total_receivables", 0]}
+                            },
+                            "totalReceipts": {
+                                "$sum": {"$ifNull": ["$total_receipts", 0]}
+                            },
+                            "booked": {
+                                "$sum": {"$ifNull": ["$booked", 0]}
+                            },
+                            "deltaPromo": {
+                                "$sum": {"$ifNull": ["$delta_promo", 0]}
+                            }
+                        }
+                    },
+                    {
+                        "$project": {
+                            "tenderName": "$_id",
+                            "posSales": 1,
+                            "posReceivables": 1,
+                            "posCommission": 1,
+                            "posCharges": 1,
+                            "posDiscounts": 1,
+                            "posFreebies": 1,
+                            "threePOSales": 1,
+                            "threePOReceivables": 1,
+                            "threePOCommission": 1,
+                            "threePOCharges": 1,
+                            "threePODiscounts": 1,
+                            "threePOFreebies": 1,
+                            "posVsThreePO": 1,
+                            "receivablesVsReceipts": 1,
+                            "reconciled": 1,
+                            "promo": 1,
+                            "totalReceivables": 1,
+                            "totalReceipts": 1,
+                            "booked": 1,
+                            "deltaPromo": 1,
+                            # Calculate all charges
+                            "allThreePOCharges": {
+                                "$add": [
+                                    "$threePOCharges",
+                                    "$promo",
+                                    "$threePODiscounts",
+                                    "$threePOFreebies",
+                                    "$threePOCommission"
+                                ]
+                            },
+                            "allPOSCharges": {
+                                "$add": [
+                                    "$posCharges",
+                                    "$promo",
+                                    "$posDiscounts",
+                                    "$posFreebies",
+                                    "$posCommission"
+                                ]
+                            }
+                        }
+                    }
+                ]
+                
+                logger.info(f"📊 Executing aggregation on devyani_posvszom collection")
+                logger.info(f"   Date range: {start_datetime} to {end_datetime}")
+                
+                # Execute aggregation
+                tender_wise_results = list(posvszom_collection.aggregate(pipeline))
+                
+                logger.info(f"   ✅ Found {len(tender_wise_results)} tender(s) in devyani_posvszom")
+                
+                # Transform results to match frontend structure
+                for item in tender_wise_results:
+                    # Default to "ZOMATO" if tenderName is null or empty
+                    tender_name = item.get("tenderName") or item.get("_id") or "ZOMATO"
+                    if not tender_name or tender_name == "null":
+                        tender_name = "ZOMATO"
+                    
+                    tender_item = {
+                        "tenderName": tender_name,
+                        "posSales": float(item.get("posSales", 0) or 0),
+                        "posReceivables": float(item.get("posReceivables", 0) or 0),
+                        "posCommission": float(item.get("posCommission", 0) or 0),
+                        "posCharges": float(item.get("posCharges", 0) or 0),
+                        "posDiscounts": int(item.get("posDiscounts", 0) or 0),
+                        "threePOSales": float(item.get("threePOSales", 0) or 0),
+                        "threePOReceivables": float(item.get("threePOReceivables", 0) or 0),
+                        "threePOCommission": float(item.get("threePOCommission", 0) or 0),
+                        "threePOCharges": float(item.get("threePOCharges", 0) or 0),
+                        "threePODiscounts": int(item.get("threePODiscounts", 0) or 0),
+                        "reconciled": int(item.get("reconciled", 0) or 0),
+                        "receivablesVsReceipts": float(item.get("receivablesVsReceipts", 0) or 0),
+                        "posFreebies": int(item.get("posFreebies", 0) or 0),
+                        "threePOFreebies": int(item.get("threePOFreebies", 0) or 0),
+                        "posVsThreePO": float(item.get("posVsThreePO", 0) or 0),
+                        "booked": int(item.get("booked", 0) or 0),
+                        "promo": int(item.get("promo", 0) or 0),
+                        "deltaPromo": int(item.get("deltaPromo", 0) or 0),
+                        "allThreePOCharges": float(item.get("allThreePOCharges", 0) or 0),
+                        "allPOSCharges": float(item.get("allPOSCharges", 0) or 0),
+                        "totalReceivables": float(item.get("totalReceivables", 0) or 0),
+                        "totalReceipts": int(item.get("totalReceipts", 0) or 0)
+                    }
+                    tender_wise_data.append(tender_item)
+                    logger.info(f"   📋 Tender: {tender_item['tenderName']}, POS Sales: {tender_item['posSales']}, 3PO Sales: {tender_item['threePOSales']}")
+                
+            except Exception as e:
+                logger.error(f"❌ Error querying devyani_posvszom collection: {e}", exc_info=True)
+                # Continue with empty array if collection query fails
+                tender_wise_data = []
+        else:
+            logger.warning("⚠️ Collection 'devyani_posvszom' does not exist, using empty arrays")
         
         # Helper to convert to int if zero, otherwise keep as float
         def format_number(value):
@@ -1975,367 +2185,43 @@ async def get_three_po_dashboard_data(
             val = float(value)
             return int(val) if val == 0 else val
         
-        summary_data_numbers = {
-            "posSales": float(summary_row.posSales or 0) if summary_row else 0,
-            "posReceivables": float(summary_row.posReceivables or 0) if summary_row else 0,
-            "posCommission": float(summary_row.posCommission or 0) if summary_row else 0,
-            "posCharges": float(summary_row.posCharges or 0) if summary_row else 0,
-            "posDiscounts": 0,
-            "threePOSales": float(summary_row.threePOSales or 0) if summary_row else 0,
-            "threePOReceivables": float(summary_row.threePOReceivables or 0) if summary_row else 0,
-            "threePOCommission": float(summary_row.threePOCommission or 0) if summary_row else 0,
-            "threePOCharges": float(summary_row.threePOCharges or 0) if summary_row else 0,
-            "threePODiscounts": 0,
-            "reconciled": format_number(summary_row.reconciled if summary_row else 0),
-            "receivablesVsReceipts": float(summary_row.receivablesVsReceipts or 0) if summary_row else 0,
-        }
+        # Calculate top-level totals from tender-wise data
+        total_pos_sales_from_tenders = sum(item.get("posSales", 0) for item in tender_wise_data)
+        total_three_po_sales_from_tenders = sum(item.get("threePOSales", 0) for item in tender_wise_data)
         
-        # Query 2: Tender-wise Data (3PO Perspective)
-        logger.info("📊 QUERY 2: Tender-wise Data (3PO Perspective)")
-        tender_data = []
+        # Use tender-wise totals if available, otherwise fall back to report collection totals
+        final_pos_sales = total_pos_sales_from_tenders if tender_wise_data else total_pos_payment
+        final_three_po_sales = total_three_po_sales_from_tenders if tender_wise_data else total_net_amount
         
-        for tender in tenders:
-            stores_placeholder_2, stores_params_2 = build_store_params(stores, "store_2")
-            tender_query_str = f"""
-                SELECT 
-                    SUM(CASE WHEN pos_net_amount > 0 THEN pos_net_amount ELSE 0 END) AS posSales,
-                    SUM(CASE WHEN pos_final_amount > 0 THEN pos_final_amount ELSE 0 END) AS posReceivables,
-                    SUM(CASE WHEN pos_commission_value > 0 THEN pos_commission_value ELSE 0 END) AS posCommission,
-                    SUM(CASE WHEN pos_tax_paid_by_customer > 0 THEN pos_tax_paid_by_customer ELSE 0 END) AS posCharges,
-                    SUM(0) AS posDiscounts,
-                    SUM(CASE WHEN zomato_net_amount > 0 THEN zomato_net_amount ELSE 0 END) AS threePOSales,
-                    SUM(CASE WHEN zomato_final_amount > 0 THEN zomato_final_amount ELSE 0 END) AS threePOReceivables,
-                    SUM(CASE WHEN zomato_commission_value > 0 THEN zomato_commission_value ELSE 0 END) AS threePOCommission,
-                    SUM(CASE WHEN zomato_tax_paid_by_customer > 0 THEN zomato_tax_paid_by_customer ELSE 0 END) AS threePOCharges,
-                    SUM(0) AS threePODiscounts,
-                    SUM(CASE WHEN reconciled_amount > 0 THEN reconciled_amount ELSE 0 END) AS reconciled,
-                    SUM(CASE WHEN zomato_final_amount > 0 THEN zomato_final_amount ELSE 0 END) AS receivablesVsReceipts,
-                    SUM(CASE WHEN zomato_net_amount > 0 THEN zomato_net_amount ELSE 0 END) AS posVsThreePO
-                FROM zomato_vs_pos_summary
-                WHERE order_date BETWEEN :start_date AND :end_date
-                AND store_name IN ({stores_placeholder_2})
-                AND zomato_order_id IS NOT NULL
-                AND zomato_net_amount > 0
-            """
-            tender_query = text(tender_query_str)
-            
-            params_2 = {
-                "start_date": start_datetime.date(),
-                "end_date": end_datetime.date(),
-                **stores_params_2
-            }
-            
-            # Log formatted query for readability
-            logger.info("📝 Tender Query Formatted SQL (for logging only):\n%s", format_sql_for_logging(tender_query_str, params_2))
-            
-            tender_result = await db.execute(tender_query, params_2)
-            tender_row = tender_result.first()
-            
-            if not tender_row:
-                # Skip if no data
-                continue
-            
-            # Calculate Receivables vs Receipts
-            stores_placeholder_rec, stores_params_rec = build_store_params(stores, "store_rec")
-            receipts_query_str = f"""
-                SELECT final_amount, deposit_amount, utr_number
-                FROM zomato_receivables_vs_receipts
-                WHERE order_date BETWEEN :start_date AND :end_date
-                AND store_name IN ({stores_placeholder_rec})
-            """
-            receipts_query = text(receipts_query_str)
-            
-            params_rec = {
-                "start_date": start_datetime.date(),
-                "end_date": end_datetime.date(),
-                **stores_params_rec
-            }
-            
-            # Log formatted query for readability
-            logger.info("📝 Receipts Query Formatted SQL (for logging only):\n%s", format_sql_for_logging(receipts_query_str, params_rec))
-            
-            receipts_result = await db.execute(receipts_query, params_rec)
-            receipts_records = receipts_result.fetchall()
-            
-            # Deduplicate by UTR
-            utr_map = {}
-            for rec in receipts_records:
-                utr = rec.utr_number
-                if not utr:
-                    continue
-                if utr not in utr_map:
-                    utr_map[utr] = {
-                        "final_amount": 0,
-                        "deposit_amount": float(rec.deposit_amount or 0)
-                    }
-                utr_map[utr]["final_amount"] += float(rec.final_amount or 0)
-            
-            total_receivables = sum(entry["final_amount"] for entry in utr_map.values())
-            total_receipts = sum(entry["deposit_amount"] for entry in utr_map.values())
-            
-            tender_data.append({
-                "posSales": float(tender_row.posSales or 0),
-                "posReceivables": float(tender_row.posReceivables or 0),
-                "posCommission": float(tender_row.posCommission or 0),
-                "posCharges": float(tender_row.posCharges or 0),
-                "posDiscounts": 0,
-                "threePOSales": float(tender_row.threePOSales or 0),
-                "threePOReceivables": float(tender_row.threePOReceivables or 0),
-                "threePOCommission": float(tender_row.threePOCommission or 0),
-                "threePOCharges": float(tender_row.threePOCharges or 0),
-                "threePODiscounts": 0,
-                "reconciled": format_number(tender_row.reconciled or 0),
-                "receivablesVsReceipts": float(tender_row.receivablesVsReceipts or 0),
-                "posVsThreePO": float(tender_row.posVsThreePO or 0),
-                "posFreebies": 0,
-                "threePOFreebies": 0,
-                "booked": 0,
-                "promo": 0,
-                "deltaPromo": 0,
-                "allThreePOCharges": 0,
-                "allPOSCharges": 0,
-                "totalReceivables": total_receivables,
-                "totalReceipts": total_receipts,
-                "tenderName": tender
-            })
-        
-        # Query 3: POS-wise Data
-        logger.info("📊 QUERY 3: POS-wise Data")
-        tender_wise_pos_data = []
-        
-        for tender in tenders:
-            stores_placeholder_3, stores_params_3 = build_store_params(stores, "store_3")
-            pos_query_str = f"""
-                SELECT 
-                    SUM(CASE WHEN pos_net_amount > 0 THEN pos_net_amount ELSE 0 END) AS posSales,
-                    SUM(CASE WHEN pos_final_amount > 0 THEN pos_final_amount ELSE 0 END) AS posReceivables,
-                    SUM(CASE WHEN pos_commission_value > 0 THEN pos_commission_value ELSE 0 END) AS posCommission,
-                    SUM(CASE WHEN pos_tax_paid_by_customer > 0 THEN pos_tax_paid_by_customer ELSE 0 END) AS posCharges,
-                    SUM(0) AS posDiscounts,
-                    SUM(CASE WHEN zomato_net_amount > 0 THEN zomato_net_amount ELSE 0 END) AS threePOSales,
-                    SUM(CASE WHEN zomato_final_amount > 0 THEN zomato_final_amount ELSE 0 END) AS threePOReceivables,
-                    SUM(CASE WHEN zomato_commission_value > 0 THEN zomato_commission_value ELSE 0 END) AS threePOCommission,
-                    SUM(CASE WHEN zomato_tax_paid_by_customer > 0 THEN zomato_tax_paid_by_customer ELSE 0 END) AS threePOCharges,
-                    SUM(0) AS threePODiscounts,
-                    SUM(CASE WHEN reconciled_amount > 0 THEN reconciled_amount ELSE 0 END) AS reconciled,
-                    SUM(CASE WHEN pos_final_amount > 0 THEN pos_final_amount ELSE 0 END) AS receivablesVsReceipts,
-                    SUM(CASE WHEN zomato_net_amount > 0 THEN zomato_net_amount ELSE 0 END) AS posVsThreePO
-                FROM zomato_vs_pos_summary
-                WHERE order_date BETWEEN :start_date AND :end_date
-                AND store_name IN ({stores_placeholder_3})
-                AND pos_order_id IS NOT NULL
-                AND pos_net_amount > 0
-            """
-            pos_query = text(pos_query_str)
-            
-            params_3 = {
-                "start_date": start_datetime.date(),
-                "end_date": end_datetime.date(),
-                **stores_params_3
-            }
-            
-            # Log formatted query for readability
-            logger.info("📝 POS Query Formatted SQL (for logging only):\n%s", format_sql_for_logging(pos_query_str, params_3))
-            
-            pos_result = await db.execute(pos_query, params_3)
-            pos_row = pos_result.first()
-            
-            if not pos_row:
-                # Skip if no data
-                continue
-            
-            # Receivables from POS summary
-            stores_placeholder_receivables, stores_params_receivables = build_store_params(stores, "store_receivables")
-            receivables_pos_query_str = f"""
-                SELECT SUM(CASE WHEN pos_final_amount > 0 THEN pos_final_amount ELSE 0 END) AS totalReceivables
-                FROM zomato_vs_pos_summary
-                WHERE order_date BETWEEN :start_date AND :end_date
-                AND store_name IN ({stores_placeholder_receivables})
-                AND pos_order_id IS NOT NULL
-                AND pos_final_amount > 0
-            """
-            receivables_pos_query = text(receivables_pos_query_str)
-            
-            params_receivables = {
-                "start_date": start_datetime.date(),
-                "end_date": end_datetime.date(),
-                **stores_params_receivables
-            }
-            
-            # Log formatted query for readability
-            logger.info("📝 Receivables POS Query Formatted SQL (for logging only):\n%s", format_sql_for_logging(receivables_pos_query_str, params_receivables))
-            
-            receivables_pos_result = await db.execute(receivables_pos_query, params_receivables)
-            receivables_pos_row = receivables_pos_result.first()
-            total_receivables_pos = float(receivables_pos_row.totalReceivables or 0) if receivables_pos_row else 0
-            
-            # Receipts (same as Query 2)
-            stores_placeholder_pos, stores_params_pos = build_store_params(stores, "store_pos")
-            receipts_pos_query_str = f"""
-                SELECT deposit_amount, utr_number
-                FROM zomato_receivables_vs_receipts
-                WHERE order_date BETWEEN :start_date AND :end_date
-                AND store_name IN ({stores_placeholder_pos})
-            """
-            receipts_pos_query = text(receipts_pos_query_str)
-            
-            params_pos = {
-                "start_date": start_datetime.date(),
-                "end_date": end_datetime.date(),
-                **stores_params_pos
-            }
-            
-            # Log formatted query for readability
-            logger.info("📝 Receipts POS Query Formatted SQL (for logging only):\n%s", format_sql_for_logging(receipts_pos_query_str, params_pos))
-            
-            receipts_pos_result = await db.execute(receipts_pos_query, params_pos)
-            receipts_pos_records = receipts_pos_result.fetchall()
-            
-            # Deduplicate by UTR
-            utr_set = set()
-            total_receipts_pos = 0
-            for rec in receipts_pos_records:
-                utr = rec.utr_number
-                if not utr or utr in utr_set:
-                    continue
-                utr_set.add(utr)
-                total_receipts_pos += float(rec.deposit_amount or 0)
-            
-            tender_wise_pos_data.append({
-                "posSales": float(pos_row.posSales or 0),
-                "posReceivables": float(pos_row.posReceivables or 0),
-                "posCommission": float(pos_row.posCommission or 0),
-                "posCharges": float(pos_row.posCharges or 0),
-                "posDiscounts": 0,
-                "threePOSales": float(pos_row.threePOSales or 0),
-                "threePOReceivables": float(pos_row.threePOReceivables or 0),
-                "threePOCommission": float(pos_row.threePOCommission or 0),
-                "threePOCharges": float(pos_row.threePOCharges or 0),
-                "threePODiscounts": 0,
-                "reconciled": format_number(pos_row.reconciled or 0),
-                "receivablesVsReceipts": float(pos_row.receivablesVsReceipts or 0),
-                "posVsThreePO": float(pos_row.posVsThreePO or 0),
-                "posFreebies": 0,
-                "threePOFreebies": 0,
-                "booked": 0,
-                "promo": 0,
-                "deltaPromo": 0,
-                "allThreePOCharges": 0,
-                "allPOSCharges": 0,
-                "totalReceivables": total_receivables_pos,
-                "totalReceipts": total_receipts_pos,
-                "tenderName": tender
-            })
-        
-        # Query 4: Instore Data Query
-        logger.info("📊 QUERY 4: Instore Data Query")
-        instore_tenders = ["CASH", "CARD", "UPI"]
-        
-        # Orders table is also in main_db
-        stores_placeholder_instore, stores_params_instore = build_store_params(stores, "store_instore")
-        instore_query_str = f"""
-            SELECT SUM(payment) AS instoreSales
-            FROM orders
-            WHERE date BETWEEN :start_date AND :end_date
-            AND store_name IN ({stores_placeholder_instore})
-            AND online_order_taker IN ('CASH', 'CARD', 'UPI')
-        """
-        instore_query = text(instore_query_str)
-        
-        params_instore = {
-            "start_date": start_datetime,
-            "end_date": end_datetime,
-            **stores_params_instore
-        }
-        
-        # Log formatted query for readability
-        logger.info("📝 Instore Query Formatted SQL (for logging only):\n%s", format_sql_for_logging(instore_query_str, params_instore))
-        
-        instore_result = await db.execute(instore_query, params_instore)
-        instore_row = instore_result.first()
-        instore_total = format_number(instore_row.instoreSales if instore_row else 0)
-        
-        # HARDCODED STATIC VALUES FOR TESTING
-        # Prepare final response with hardcoded dummy data
+        # Prepare final response
+        # Map aggregated MongoDB data to response structure
         response = {
-            "posSales": 150000.0,
-            "posReceivables": 145000.0,
-            "posCommission": 5000.0,
-            "posCharges": 3000.0,
-            "posDiscounts": 2000,
-            "threePOSales": 200000.0,
-            "threePOReceivables": 195000.0,
-            "threePOCommission": 8000.0,
-            "threePOCharges": 5000.0,
-            "threePODiscounts": 3000,
-            "reconciled": 500,
-            "receivablesVsReceipts": 5000.0,
-            "posFreebies": 100,
-            "threePOFreebies": 150,
-            "posVsThreePO": 50000,
-            "booked": 450,
-            "promo": 250,
-            "deltaPromo": 50,
-            "allThreePOCharges": 5000,
-            "allPOSCharges": 3000,
-            "threePOData": [
-                {
-                    "posSales": 150000.0,
-                    "posReceivables": 145000.0,
-                    "posCommission": 5000.0,
-                    "posCharges": 3000.0,
-                    "posDiscounts": 2000,
-                    "threePOSales": 200000.0,
-                    "threePOReceivables": 195000.0,
-                    "threePOCommission": 8000.0,
-                    "threePOCharges": 5000.0,
-                    "threePODiscounts": 3000,
-                    "reconciled": 500,
-                    "receivablesVsReceipts": 5000.0,
-                    "posVsThreePO": 50000.0,
-                    "posFreebies": 100,
-                    "threePOFreebies": 150,
-                    "booked": 450,
-                    "promo": 250,
-                    "deltaPromo": 50,
-                    "allThreePOCharges": 5000,
-                    "allPOSCharges": 3000,
-                    "totalReceivables": 195000,
-                    "totalReceipts": 190000,
-                    "tenderName": "ZOMATO"
-                }
-            ],
-            "tenderWisePOSData": [
-                {
-                    "posSales": 150000.0,
-                    "posReceivables": 145000.0,
-                    "posCommission": 5000.0,
-                    "posCharges": 3000.0,
-                    "posDiscounts": 2000,
-                    "threePOSales": 200000.0,
-                    "threePOReceivables": 195000.0,
-                    "threePOCommission": 8000.0,
-                    "threePOCharges": 5000.0,
-                    "threePODiscounts": 3000,
-                    "reconciled": 500,
-                    "receivablesVsReceipts": 5000.0,
-                    "posVsThreePO": 50000.0,
-                    "posFreebies": 100,
-                    "threePOFreebies": 150,
-                    "booked": 450,
-                    "promo": 250,
-                    "deltaPromo": 50,
-                    "allThreePOCharges": 5000,
-                    "allPOSCharges": 3000,
-                    "totalReceivables": 195000.0,
-                    "totalReceipts": 190000,
-                    "tenderName": "ZOMATO"
-                }
-            ],
-            "instoreTotal": 150000
+            "posSales": final_pos_sales,
+            "posReceivables": sum(item.get("posReceivables", 0) for item in tender_wise_data),
+            "posCommission": sum(item.get("posCommission", 0) for item in tender_wise_data),
+            "posCharges": sum(item.get("posCharges", 0) for item in tender_wise_data),
+            "posDiscounts": sum(item.get("posDiscounts", 0) for item in tender_wise_data),
+            "threePOSales": final_three_po_sales,
+            "threePOReceivables": sum(item.get("threePOReceivables", 0) for item in tender_wise_data),
+            "threePOCommission": sum(item.get("threePOCommission", 0) for item in tender_wise_data),
+            "threePOCharges": sum(item.get("threePOCharges", 0) for item in tender_wise_data),
+            "threePODiscounts": sum(item.get("threePODiscounts", 0) for item in tender_wise_data),
+            "reconciled": sum(item.get("reconciled", 0) for item in tender_wise_data),
+            "receivablesVsReceipts": sum(item.get("receivablesVsReceipts", 0) for item in tender_wise_data),
+            "posFreebies": sum(item.get("posFreebies", 0) for item in tender_wise_data),
+            "threePOFreebies": sum(item.get("threePOFreebies", 0) for item in tender_wise_data),
+            "posVsThreePO": sum(item.get("posVsThreePO", 0) for item in tender_wise_data),
+            "booked": sum(item.get("booked", 0) for item in tender_wise_data),
+            "promo": sum(item.get("promo", 0) for item in tender_wise_data),
+            "deltaPromo": sum(item.get("deltaPromo", 0) for item in tender_wise_data),
+            "allThreePOCharges": sum(item.get("allThreePOCharges", 0) for item in tender_wise_data),
+            "allPOSCharges": sum(item.get("allPOSCharges", 0) for item in tender_wise_data),
+            "threePOData": tender_wise_data,  # ✅ NOW POPULATED
+            "tenderWisePOSData": tender_wise_data,  # ✅ NOW POPULATED (same data, frontend uses based on salesType)
+            "instoreTotal": final_pos_sales
         }
         
-        logger.info("✅ API Request Completed Successfully (Returning Hardcoded Static Values)")
+        logger.info("✅ API Request Completed Successfully")
         
         return {
             "success": True,
@@ -2344,6 +2230,359 @@ async def get_three_po_dashboard_data(
         
     except Exception as e:
         logger.error(f"Get 3PO dashboard data error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error fetching 3PO dashboard data: {str(e)}"
+        )
+
+
+@router.post("/threePODashboardDataNew")
+async def get_three_po_dashboard_data_new(
+    request_data: ThreePODashboardDataRequest,
+    db: AsyncSession = Depends(get_main_db),  # Using main_db for reconciliation tables
+    current_user: UserDetails = Depends(get_current_user)
+):
+    """Get 3PO dashboard data from MongoDB report collections - New version"""
+    try:
+        from datetime import datetime
+        from app.services.mongodb_service import mongodb_service
+        from app.config.mongodb import get_mongodb_collection
+        
+        logger.info("===========================================")
+        logger.info("🚀 /threePODashboardDataNew API IS HIT")
+        logger.info("===========================================")
+        
+        startDate = request_data.startDate
+        endDate = request_data.endDate
+        stores = request_data.stores
+        
+        if not startDate or not endDate or not stores:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Missing required parameters: startDate, endDate, or stores"
+            )
+        
+        # Check MongoDB connection
+        if not mongodb_service.is_connected():
+            logger.error("❌ MongoDB not connected")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="MongoDB is not connected"
+            )
+        
+        # Convert date strings to datetime objects
+        start_datetime = datetime.strptime(startDate, "%Y-%m-%d %H:%M:%S")
+        end_datetime = datetime.strptime(endDate, "%Y-%m-%d %H:%M:%S")
+        
+        # Step 1: Get mapping configurations from dashboard_api_mapping_keys collection
+        logger.info("📊 Step 1: Getting mapping configurations from dashboard_api_mapping_keys collection")
+        mapping_keys_collection = get_mongodb_collection("dashboard_api_mapping_keys")
+        
+        if not mongodb_service.collection_exists("dashboard_api_mapping_keys"):
+            logger.warning("⚠️ dashboard_api_mapping_keys collection does not exist")
+            mapping_documents = []
+        else:
+            # Get all documents where is_3PO is true
+            mapping_documents = list(mapping_keys_collection.find({"is_3PO": True}))
+            logger.info(f"📋 Found {len(mapping_documents)} mapping document(s) with is_3PO=true")
+        
+        # Initialize response structure with default values
+        response_fields = {
+            "posSales": 0.0,
+            "posReceivables": 0.0,
+            "posCommission": 0.0,
+            "posCharges": 0.0,
+            "posDiscounts": 0,
+            "posFreebies": 0,
+            "threePOSales": 0.0,
+            "threePOReceivables": 0.0,
+            "threePOCommission": 0.0,
+            "threePOCharges": 0.0,
+            "threePODiscounts": 0,
+            "threePOFreebies": 0,
+            "reconciled": 0,
+            "receivablesVsReceipts": 0.0,
+            "posVsThreePO": 0.0,
+            "booked": 0,
+            "promo": 0,
+            "deltaPromo": 0,
+            "allThreePOCharges": 0.0,
+            "allPOSCharges": 0.0,
+            "totalReceivables": 0.0,
+            "totalReceipts": 0
+        }
+        
+        # Dictionary to store tender-wise data (grouped by tender_name)
+        tender_wise_data_dict = {}
+        
+        # Step 2: Process each mapping document
+        logger.info("📊 Step 2: Processing mapping documents and aggregating data")
+        for mapping_doc in mapping_documents:
+            collection_name = mapping_doc.get("name")
+            mapping_keys = mapping_doc.get("mapping_keys", [])
+            
+            if not collection_name:
+                logger.warning(f"⚠️ Mapping document missing 'name' field, skipping")
+                continue
+            
+            collection_name_lower = collection_name.lower().strip()
+            
+            # Check if collection exists
+            if not mongodb_service.collection_exists(collection_name_lower):
+                logger.warning(f"⚠️ Collection '{collection_name_lower}' does not exist, skipping")
+                continue
+            
+            if not mapping_keys or len(mapping_keys) == 0:
+                logger.warning(f"⚠️ No mapping_keys found for collection '{collection_name}', skipping")
+                continue
+            
+            logger.info(f"📊 Processing collection '{collection_name}' with {len(mapping_keys)} mapping(s)")
+            
+            try:
+                # Get the report collection
+                report_collection = mongodb_service.db[collection_name_lower]
+                
+                # Build dynamic aggregation pipeline based on mapping_keys
+                # First, build the $group stage dynamically
+                group_stage = {"_id": "$tender_name"}  # Group by tender_name for tender-wise data
+                
+                # Also create a separate aggregation for totals (no grouping)
+                total_group_stage = {"_id": None}
+                
+                # Track which fields need to be aggregated
+                fields_to_aggregate = {}
+                
+                for mapping in mapping_keys:
+                    if not isinstance(mapping, dict):
+                        continue
+                    
+                    three_po_key = mapping.get("3po_key")
+                    collection_key = mapping.get("collection_key")
+                    
+                    if not three_po_key or not collection_key:
+                        logger.warning(f"⚠️ Invalid mapping: {mapping}, skipping")
+                        continue
+                    
+                    # Store mapping for later use
+                    fields_to_aggregate[three_po_key] = collection_key
+                    
+                    # Build field reference for MongoDB (need to construct the $field reference properly)
+                    # In MongoDB aggregation, field references are strings like "$field_name"
+                    field_ref = f"${collection_key}"
+                    
+                    # Add to group stage for tender-wise aggregation
+                    group_stage[three_po_key] = {
+                        "$sum": {"$ifNull": [field_ref, 0]}
+                    }
+                    
+                    # Add to total group stage for top-level totals
+                    total_group_stage[three_po_key] = {
+                        "$sum": {"$ifNull": [field_ref, 0]}
+                    }
+                
+                if not fields_to_aggregate:
+                    logger.warning(f"⚠️ No valid mappings found for collection '{collection_name}', skipping")
+                    continue
+                
+                # Build aggregation pipeline for tender-wise data
+                tender_pipeline = [
+                    {
+                        "$match": {
+                            "order_date": {
+                                "$gte": start_datetime,
+                                "$lte": end_datetime
+                            }
+                        }
+                    },
+                    {
+                        "$group": group_stage
+                    },
+                    {
+                        "$project": {
+                            "tenderName": "$_id",
+                            **{key: 1 for key in fields_to_aggregate.keys()}
+                        }
+                    }
+                ]
+                
+                # Build aggregation pipeline for totals
+                total_pipeline = [
+                    {
+                        "$match": {
+                            "order_date": {
+                                "$gte": start_datetime,
+                                "$lte": end_datetime
+                            }
+                        }
+                    },
+                    {
+                        "$group": total_group_stage
+                    }
+                ]
+                
+                logger.info(f"   📊 Executing aggregation on '{collection_name_lower}'")
+                logger.info(f"   Date range: {start_datetime} to {end_datetime}")
+                logger.info(f"   Fields to aggregate: {list(fields_to_aggregate.keys())}")
+                
+                # Execute tender-wise aggregation
+                tender_results = list(report_collection.aggregate(tender_pipeline))
+                logger.info(f"   ✅ Found {len(tender_results)} tender(s) in '{collection_name_lower}'")
+                
+                # Process tender-wise results
+                for tender_item in tender_results:
+                    tender_name = tender_item.get("tenderName") or tender_item.get("_id") or "ZOMATO"
+                    if not tender_name or tender_name == "null":
+                        tender_name = "ZOMATO"
+                    
+                    # Initialize tender data if not exists
+                    if tender_name not in tender_wise_data_dict:
+                        tender_wise_data_dict[tender_name] = {key: 0 for key in response_fields.keys()}
+                        tender_wise_data_dict[tender_name]["tenderName"] = tender_name
+                    
+                    # Update tender data with aggregated values
+                    for three_po_key, value in tender_item.items():
+                        if three_po_key != "tenderName" and three_po_key != "_id":
+                            if three_po_key in tender_wise_data_dict[tender_name]:
+                                # Convert to appropriate type
+                                if three_po_key in ["posDiscounts", "posFreebies", "threePODiscounts", "threePOFreebies", 
+                                                   "reconciled", "booked", "promo", "deltaPromo", "totalReceipts"]:
+                                    tender_wise_data_dict[tender_name][three_po_key] += int(value or 0)
+                                else:
+                                    tender_wise_data_dict[tender_name][three_po_key] += float(value or 0)
+                
+                # Execute total aggregation
+                total_results = list(report_collection.aggregate(total_pipeline))
+                if total_results and len(total_results) > 0:
+                    total_data = total_results[0]
+                    logger.info(f"   ✅ Total aggregation completed for '{collection_name_lower}'")
+                    
+                    # Update top-level response fields
+                    for three_po_key, value in total_data.items():
+                        if three_po_key != "_id" and three_po_key in response_fields:
+                            # Convert to appropriate type
+                            if three_po_key in ["posDiscounts", "posFreebies", "threePODiscounts", "threePOFreebies", 
+                                               "reconciled", "booked", "promo", "deltaPromo", "totalReceipts"]:
+                                response_fields[three_po_key] += int(value or 0)
+                            else:
+                                response_fields[three_po_key] += float(value or 0)
+                
+            except Exception as e:
+                logger.error(f"❌ Error processing collection '{collection_name_lower}': {e}", exc_info=True)
+                continue
+        
+        # Step 3: Convert tender_wise_data_dict to list and calculate computed fields
+        logger.info("📊 Step 3: Processing tender-wise data and calculating computed fields")
+        tender_wise_data = []
+        
+        for tender_name, tender_data in tender_wise_data_dict.items():
+            # Calculate computed fields
+            all_three_po_charges = (
+                tender_data.get("threePOCharges", 0) +
+                tender_data.get("promo", 0) +
+                tender_data.get("threePODiscounts", 0) +
+                tender_data.get("threePOFreebies", 0) +
+                tender_data.get("threePOCommission", 0)
+            )
+            
+            all_pos_charges = (
+                tender_data.get("posCharges", 0) +
+                tender_data.get("promo", 0) +
+                tender_data.get("posDiscounts", 0) +
+                tender_data.get("posFreebies", 0) +
+                tender_data.get("posCommission", 0)
+            )
+            
+            tender_item = {
+                "tenderName": tender_name,
+                "posSales": float(tender_data.get("posSales", 0) or 0),
+                "posReceivables": float(tender_data.get("posReceivables", 0) or 0),
+                "posCommission": float(tender_data.get("posCommission", 0) or 0),
+                "posCharges": float(tender_data.get("posCharges", 0) or 0),
+                "posDiscounts": int(tender_data.get("posDiscounts", 0) or 0),
+                "posFreebies": int(tender_data.get("posFreebies", 0) or 0),
+                "threePOSales": float(tender_data.get("threePOSales", 0) or 0),
+                "threePOReceivables": float(tender_data.get("threePOReceivables", 0) or 0),
+                "threePOCommission": float(tender_data.get("threePOCommission", 0) or 0),
+                "threePOCharges": float(tender_data.get("threePOCharges", 0) or 0),
+                "threePODiscounts": int(tender_data.get("threePODiscounts", 0) or 0),
+                "threePOFreebies": int(tender_data.get("threePOFreebies", 0) or 0),
+                "reconciled": int(tender_data.get("reconciled", 0) or 0),
+                "receivablesVsReceipts": float(tender_data.get("receivablesVsReceipts", 0) or 0),
+                "posVsThreePO": float(tender_data.get("posVsThreePO", 0) or 0),
+                "booked": int(tender_data.get("booked", 0) or 0),
+                "promo": int(tender_data.get("promo", 0) or 0),
+                "deltaPromo": int(tender_data.get("deltaPromo", 0) or 0),
+                "allThreePOCharges": float(all_three_po_charges),
+                "allPOSCharges": float(all_pos_charges),
+                "totalReceivables": float(tender_data.get("totalReceivables", 0) or 0),
+                "totalReceipts": int(tender_data.get("totalReceipts", 0) or 0)
+            }
+            tender_wise_data.append(tender_item)
+            logger.info(f"   📋 Tender: {tender_name}, POS Sales: {tender_item['posSales']}, 3PO Sales: {tender_item['threePOSales']}")
+        
+        # Calculate computed fields for top-level response
+        all_three_po_charges_total = (
+            response_fields.get("threePOCharges", 0) +
+            response_fields.get("promo", 0) +
+            response_fields.get("threePODiscounts", 0) +
+            response_fields.get("threePOFreebies", 0) +
+            response_fields.get("threePOCommission", 0)
+        )
+        
+        all_pos_charges_total = (
+            response_fields.get("posCharges", 0) +
+            response_fields.get("promo", 0) +
+            response_fields.get("posDiscounts", 0) +
+            response_fields.get("posFreebies", 0) +
+            response_fields.get("posCommission", 0)
+        )
+        
+        # Calculate top-level totals from tender-wise data if available
+        total_pos_sales_from_tenders = sum(item.get("posSales", 0) for item in tender_wise_data)
+        total_three_po_sales_from_tenders = sum(item.get("threePOSales", 0) for item in tender_wise_data)
+        
+        # Use tender-wise totals if available, otherwise use aggregated totals
+        final_pos_sales = total_pos_sales_from_tenders if tender_wise_data else response_fields.get("posSales", 0)
+        final_three_po_sales = total_three_po_sales_from_tenders if tender_wise_data else response_fields.get("threePOSales", 0)
+        
+        # Prepare final response
+        response = {
+            "posSales": final_pos_sales,
+            "posReceivables": response_fields.get("posReceivables", 0.0),
+            "posCommission": response_fields.get("posCommission", 0.0),
+            "posCharges": response_fields.get("posCharges", 0.0),
+            "posDiscounts": response_fields.get("posDiscounts", 0),
+            "posFreebies": response_fields.get("posFreebies", 0),
+            "threePOSales": final_three_po_sales,
+            "threePOReceivables": response_fields.get("threePOReceivables", 0.0),
+            "threePOCommission": response_fields.get("threePOCommission", 0.0),
+            "threePOCharges": response_fields.get("threePOCharges", 0.0),
+            "threePODiscounts": response_fields.get("threePODiscounts", 0),
+            "threePOFreebies": response_fields.get("threePOFreebies", 0),
+            "reconciled": response_fields.get("reconciled", 0),
+            "receivablesVsReceipts": response_fields.get("receivablesVsReceipts", 0.0),
+            "posVsThreePO": response_fields.get("posVsThreePO", 0.0),
+            "booked": response_fields.get("booked", 0),
+            "promo": response_fields.get("promo", 0),
+            "deltaPromo": response_fields.get("deltaPromo", 0),
+            "allThreePOCharges": float(all_three_po_charges_total),
+            "allPOSCharges": float(all_pos_charges_total),
+            "totalReceivables": response_fields.get("totalReceivables", 0.0),
+            "totalReceipts": response_fields.get("totalReceipts", 0),
+            "threePOData": tender_wise_data,
+            "tenderWisePOSData": tender_wise_data,
+            "instoreTotal": final_pos_sales
+        }
+        
+        logger.info("✅ API Request Completed Successfully")
+        
+        return {
+            "success": True,
+            "data": response
+        }
+        
+    except Exception as e:
+        logger.error(f"Get 3PO dashboard data new error: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error fetching 3PO dashboard data: {str(e)}"
