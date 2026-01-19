@@ -2477,10 +2477,9 @@ async def get_three_po_dashboard_data_new(
         for tender_name, tender_data in tender_wise_data_dict.items():
             # Calculate computed fields
             # Check if allThreePOCharges was already aggregated from MongoDB (via mapping)
-            # If it exists and is non-zero, use it; otherwise calculate it
-            all_three_po_charges_from_db = tender_data.get("allThreePOCharges", 0) or 0
-            if all_three_po_charges_from_db != 0:
-                all_three_po_charges = float(all_three_po_charges_from_db)
+            # If the key exists in tender_data (meaning it was aggregated), use it; otherwise calculate it
+            if "allThreePOCharges" in tender_data:
+                all_three_po_charges = float(tender_data.get("allThreePOCharges", 0) or 0)
                 logger.info(f"   ✅ Using allThreePOCharges from MongoDB for {tender_name}: {all_three_po_charges}")
             else:
                 # Fallback: calculate from component fields
@@ -2494,9 +2493,8 @@ async def get_three_po_dashboard_data_new(
                 logger.info(f"   📊 Calculated allThreePOCharges for {tender_name}: {all_three_po_charges}")
             
             # Check if allPOSCharges was already aggregated from MongoDB (via mapping)
-            all_pos_charges_from_db = tender_data.get("allPOSCharges", 0) or 0
-            if all_pos_charges_from_db != 0:
-                all_pos_charges = float(all_pos_charges_from_db)
+            if "allPOSCharges" in tender_data:
+                all_pos_charges = float(tender_data.get("allPOSCharges", 0) or 0)
                 logger.info(f"   ✅ Using allPOSCharges from MongoDB for {tender_name}: {all_pos_charges}")
             else:
                 # Fallback: calculate from component fields
@@ -2539,9 +2537,9 @@ async def get_three_po_dashboard_data_new(
         
         # Calculate computed fields for top-level response
         # Check if allThreePOCharges was already aggregated from MongoDB (via mapping)
-        all_three_po_charges_total_from_db = response_fields.get("allThreePOCharges", 0) or 0
-        if all_three_po_charges_total_from_db != 0:
-            all_three_po_charges_total = float(all_three_po_charges_total_from_db)
+        # If the key exists in response_fields (meaning it was aggregated), use it; otherwise calculate it
+        if "allThreePOCharges" in response_fields:
+            all_three_po_charges_total = float(response_fields.get("allThreePOCharges", 0) or 0)
             logger.info(f"   ✅ Using allThreePOCharges from MongoDB (total): {all_three_po_charges_total}")
         else:
             # Fallback: calculate from component fields
@@ -2555,9 +2553,8 @@ async def get_three_po_dashboard_data_new(
             logger.info(f"   📊 Calculated allThreePOCharges (total): {all_three_po_charges_total}")
         
         # Check if allPOSCharges was already aggregated from MongoDB (via mapping)
-        all_pos_charges_total_from_db = response_fields.get("allPOSCharges", 0) or 0
-        if all_pos_charges_total_from_db != 0:
-            all_pos_charges_total = float(all_pos_charges_total_from_db)
+        if "allPOSCharges" in response_fields:
+            all_pos_charges_total = float(response_fields.get("allPOSCharges", 0) or 0)
             logger.info(f"   ✅ Using allPOSCharges from MongoDB (total): {all_pos_charges_total}")
         else:
             # Fallback: calculate from component fields
