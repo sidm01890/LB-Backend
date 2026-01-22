@@ -5,8 +5,10 @@ Application settings and configuration
 from pydantic_settings import BaseSettings
 from typing import Optional
 import os
+import json
 import logging
 from urllib.parse import quote_plus
+from contextvars import ContextVar
 
 
 class Settings(BaseSettings):
@@ -122,6 +124,9 @@ class Settings(BaseSettings):
 # so Docker environment variables will override .env file values
 settings = Settings()
 
+# Context variable to store current user info from token for MongoDB database resolution
+_current_user_context: ContextVar[Optional[dict]] = ContextVar('current_user_context', default=None)
+
 # Log environment configuration for debugging
 logger = logging.getLogger(__name__)
 logger.info(f"🌍 Environment: {settings.environment}")
@@ -211,7 +216,11 @@ def get_database_urls():
 
 
 def get_mongodb_connection_string() -> str:
-    """Get MongoDB connection string based on environment"""
+    """Get MongoDB connection string based on environment
+    
+    Note: Connection string does not include database name.
+    Database selection happens per-request based on user token via get_mongodb_database_name().
+    """
     if settings.environment == "production" and settings.production_mongo_host:
         # Production: Use production MongoDB settings
         if settings.production_mongo_username and settings.production_mongo_password:
@@ -220,12 +229,11 @@ def get_mongodb_connection_string() -> str:
             connection_string = (
                 f"mongodb://{username}:{password}"
                 f"@{settings.production_mongo_host}:{settings.production_mongo_port}/"
-                f"{settings.production_mongo_database}?authSource={settings.production_mongo_auth_source}"
+                f"?authSource={settings.production_mongo_auth_source}"
             )
         else:
             connection_string = (
                 f"mongodb://{settings.production_mongo_host}:{settings.production_mongo_port}/"
-                f"{settings.production_mongo_database}"
             )
     else:
         # Development/Staging: Use local MongoDB
@@ -235,22 +243,51 @@ def get_mongodb_connection_string() -> str:
             connection_string = (
                 f"mongodb://{username}:{password}"
                 f"@{settings.mongo_host}:{settings.mongo_port}/"
-                f"{settings.mongo_database}?authSource={settings.mongo_auth_source}"
+                f"?authSource={settings.mongo_auth_source}"
             )
         else:
             # Local MongoDB without authentication (default for development)
             connection_string = (
                 f"mongodb://{settings.mongo_host}:{settings.mongo_port}/"
-                f"{settings.mongo_database}"
             )
     
     return connection_string
 
 
 def get_mongodb_database_name() -> str:
-    """Get MongoDB database name based on environment"""
+    """Get MongoDB database name based on environment and user token"""
+    # First check environment-based override
     if settings.environment == "production" and settings.production_mongo_database:
         return settings.production_mongo_database
+    
+    # Try to get database name from user context (token-based)
+    user_context = _current_user_context.get()
+    if user_context:
+        mapping_file = os.path.join(os.path.dirname(__file__), 'mongo_db_mapping.json')
+        if os.path.exists(mapping_file):
+            try:
+                with open(mapping_file, 'r') as f:
+                    mapping = json.load(f)
+                    username = user_context.get('username')
+                    org_id = str(user_context.get('organization_id', '')) if user_context.get('organization_id') else None
+                    
+                    # Try username first
+                    if username and username in mapping.get('users', {}):
+                        db_name = mapping['users'][username]
+                        logger.debug(f"📊 MongoDB database resolved from username mapping: {username} → {db_name}")
+                        return db_name
+                    
+                    # Try organization_id
+                    if org_id and org_id in mapping.get('organizations', {}):
+                        db_name = mapping['organizations'][org_id]
+                        logger.debug(f"📊 MongoDB database resolved from organization mapping: {org_id} → {db_name}")
+                        return db_name
+            except Exception as e:
+                logger.warning(f"⚠️ Error reading mongo_db_mapping.json: {e}")
+        else:
+            logger.debug(f"⚠️ MongoDB mapping file not found at {mapping_file}, using default")
+    
+    # Fallback to default from env
     return settings.mongo_database
 
 

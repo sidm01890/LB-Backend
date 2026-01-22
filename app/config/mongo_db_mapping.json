@@ -1,0 +1,11 @@
+{
+  "users": {
+    "devyani_user": "devyani_mongo",
+    "bercos_user": "bercos_mongo"
+  },
+  "organizations": {
+    "1": "devyani_mongo",
+    "2": "bercos_mongo"
+  },
+  "default": "devyani_mongo"
+}

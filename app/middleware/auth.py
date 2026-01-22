@@ -7,6 +7,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.config.database import get_sso_db
 from app.config.security import verify_token
+from app.config.settings import _current_user_context
 from app.models.sso.user_details import UserDetails
 from typing import Optional
 
@@ -45,6 +46,13 @@ async def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found"
         )
+    
+    # Set context for MongoDB database resolution based on token
+    _current_user_context.set({
+        'username': user.username,
+        'organization_id': user.organization_id,
+        'id': user.id
+    })
     
     return user
 

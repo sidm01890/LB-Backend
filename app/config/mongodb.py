@@ -11,15 +11,16 @@ from app.config.settings import (
     get_mongodb_database_name
 )
 import logging
-from typing import Optional
+from typing import Optional, Dict
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Global MongoDB client and database instances
+# Global MongoDB client (shared across all databases)
 _mongo_client: Optional[MongoClient] = None
-_mongo_database: Optional[Database] = None
+# Per-database cache (key: database_name, value: Database instance)
+_mongo_databases: Dict[str, Database] = {}
 
 
 def create_mongodb_client() -> MongoClient:
@@ -31,11 +32,9 @@ def create_mongodb_client() -> MongoClient:
     
     try:
         connection_string = get_mongodb_connection_string()
-        database_name = get_mongodb_database_name()
         
         # Log connection details (without password)
         logger.info(f"🔌 Connecting to MongoDB: {settings.mongo_host}:{settings.mongo_port}")
-        logger.info(f"📊 Database: {database_name}")
         if settings.mongo_username:
             logger.info(f"👤 Username: {settings.mongo_username}")
             logger.info(f"🔐 Auth Source: {settings.mongo_auth_source}")
@@ -49,6 +48,7 @@ def create_mongodb_client() -> MongoClient:
         logger.debug(f"🔗 Connection string: {masked_conn_str}")
         
         # Create MongoDB client with connection pool settings
+        # Note: Connection string doesn't include database name - we'll select database per request
         _mongo_client = MongoClient(
             connection_string,
             maxPoolSize=settings.mongo_max_pool_size,
@@ -66,7 +66,6 @@ def create_mongodb_client() -> MongoClient:
     except ConnectionFailure as e:
         logger.error(f"❌ MongoDB connection failed: {e}")
         logger.error(f"   Host: {settings.mongo_host}:{settings.mongo_port}")
-        logger.error(f"   Database: {database_name}")
         if settings.mongo_username:
             logger.error(f"   Username: {settings.mongo_username}")
         raise
@@ -82,19 +81,21 @@ def create_mongodb_client() -> MongoClient:
 
 
 def get_mongodb_database() -> Database:
-    """Get MongoDB database instance"""
-    global _mongo_database
-    
-    if _mongo_database is not None:
-        return _mongo_database
+    """Get MongoDB database instance based on user context (token-based)"""
+    global _mongo_databases
     
     try:
         client = create_mongodb_client()
         database_name = get_mongodb_database_name()
-        _mongo_database = client[database_name]
         
-        logger.info(f"✅ MongoDB database '{database_name}' accessed successfully")
-        return _mongo_database
+        # Cache per database name (supports multiple databases per MongoDB instance)
+        if database_name not in _mongo_databases:
+            _mongo_databases[database_name] = client[database_name]
+            logger.info(f"✅ MongoDB database '{database_name}' cached successfully")
+        else:
+            logger.debug(f"📊 Using cached MongoDB database '{database_name}'")
+        
+        return _mongo_databases[database_name]
         
     except Exception as e:
         logger.error(f"❌ Error accessing MongoDB database: {e}")
@@ -136,7 +137,7 @@ def test_mongodb_connection() -> bool:
 
 def close_mongodb_connection():
     """Close MongoDB connection"""
-    global _mongo_client, _mongo_database
+    global _mongo_client, _mongo_databases
     
     if _mongo_client:
         try:
@@ -146,5 +147,5 @@ def close_mongodb_connection():
             logger.error(f"❌ Error closing MongoDB connection: {e}")
         finally:
             _mongo_client = None
-            _mongo_database = None
+            _mongo_databases.clear()
 
