@@ -145,9 +145,11 @@ class MongoDBService:
             return []
         
         try:
+            # Get the current database based on user context (not cached self.db)
+            current_db = get_mongodb_database()
             raw_data_collection = get_mongodb_collection("raw_data_collection")
             # Check if collection exists
-            if "raw_data_collection" not in self.db.list_collection_names():
+            if "raw_data_collection" not in current_db.list_collection_names():
                 logger.info("📋 raw_data_collection does not exist yet - returning empty list")
                 return []
             
@@ -188,6 +190,9 @@ class MongoDBService:
         collection_name_lower = collection_name.lower()
         processed_collection_name = f"{collection_name_lower}_processed"
         
+        # Get the current database based on user context (not cached self.db)
+        current_db = get_mongodb_database()
+        
         # Check if entry already exists in raw_data_collection
         try:
             raw_data_collection = get_mongodb_collection("raw_data_collection")
@@ -204,8 +209,8 @@ class MongoDBService:
         except Exception as e:
             logger.debug(f"raw_data_collection check: {e}")
         
-        # Check if collections already exist in MongoDB
-        existing_collections = self.db.list_collection_names()
+        # Check if collections already exist in MongoDB (use current_db based on user context)
+        existing_collections = current_db.list_collection_names()
         if collection_name_lower in existing_collections or processed_collection_name in existing_collections:
             logger.info(f"ℹ️ Collection '{collection_name_lower}' or '{processed_collection_name}' already exists in MongoDB. Skipping creation.")
             existing_unique_ids = unique_ids if unique_ids else []
@@ -449,8 +454,11 @@ class MongoDBService:
         
         collection_name_lower = collection_name.lower()
         
+        # Get the current database based on user context (not cached self.db)
+        current_db = get_mongodb_database()
+        
         # Check if collection exists
-        existing_collections = self.db.list_collection_names()
+        existing_collections = current_db.list_collection_names()
         if collection_name_lower not in existing_collections:
             raise ValueError(f"Collection '{collection_name_lower}' does not exist")
         
@@ -515,8 +523,11 @@ class MongoDBService:
         
         collection_name_lower = collection_name.lower()
         
+        # Get the current database based on user context (not cached self.db)
+        current_db = get_mongodb_database()
+        
         # Check if collection exists
-        existing_collections = self.db.list_collection_names()
+        existing_collections = current_db.list_collection_names()
         if collection_name_lower not in existing_collections:
             raise ValueError(f"Collection '{collection_name_lower}' does not exist")
         
@@ -571,8 +582,11 @@ class MongoDBService:
         
         collection_name_lower = collection_name.lower()
         
+        # Get the current database based on user context (not cached self.db)
+        current_db = get_mongodb_database()
+        
         # Check if collection exists
-        existing_collections = self.db.list_collection_names()
+        existing_collections = current_db.list_collection_names()
         if collection_name_lower not in existing_collections:
             raise ValueError(f"Collection '{collection_name_lower}' does not exist")
         
@@ -710,8 +724,10 @@ class MongoDBService:
             return False
         
         try:
+            # Get the current database based on user context (not cached self.db)
+            current_db = get_mongodb_database()
             collection_name_lower = collection_name.lower()
-            existing_collections = self.db.list_collection_names()
+            existing_collections = current_db.list_collection_names()
             return collection_name_lower in existing_collections
         except Exception as e:
             logger.error(f"❌ Error checking if collection '{collection_name}' exists: {e}")
@@ -1308,8 +1324,11 @@ class MongoDBService:
         
         collection_name_lower = collection_name.lower()
         
+        # Get the current database based on user context (not cached self.db)
+        current_db = get_mongodb_database()
+        
         # Check if collection exists
-        existing_collections = self.db.list_collection_names()
+        existing_collections = current_db.list_collection_names()
         if collection_name_lower not in existing_collections:
             raise ValueError(f"Collection '{collection_name_lower}' does not exist")
         
