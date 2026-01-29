@@ -2574,16 +2574,21 @@ async def get_three_po_dashboard_data_new(
                             collection_field = field_info.get("collection_field")
                             table_name = field_info.get("table_name")
                             field_type = field_info.get("field_type")
+                            referenced_logic_name_key = field_info.get("referenced_logic_name_key")
                             
                             # Try different field name variations to find the actual field in the collection
                             field_variations = []
                             
-                            # For Formula references, try the logicNameKey directly
+                            # For Formula references, try the logicNameKey directly and variations
                             if field_type == "Formula":
+                                # The collection_field is the logicNameKey (e.g., "SERVICE_FEE_ZOM")
+                                # Try exact match, uppercase, lowercase, and also check if it's stored as a nested object
                                 field_variations = [
                                     collection_field,  # e.g., "SERVICE_FEE_ZOM"
                                     collection_field.upper(),  # e.g., "SERVICE_FEE_ZOM"
                                     collection_field.lower(),  # e.g., "service_fee_zom"
+                                    collection_field.replace("_", "").lower(),  # e.g., "servicefeezom"
+                                    collection_field.replace("_", "").upper(),  # e.g., "SERVICEFEEZOM"
                                 ]
                             
                             # For Dataset fields, try nested and direct access
@@ -2594,12 +2599,14 @@ async def get_three_po_dashboard_data_new(
                                     collection_field,  # Direct: "packaging_charge"
                                     collection_field.lower(),
                                     collection_field.upper(),
+                                    collection_field.replace("_", "").lower(),
                                 ]
                             else:
                                 field_variations = [
                                     collection_field,
                                     collection_field.lower(),
                                     collection_field.upper(),
+                                    collection_field.replace("_", "").lower(),
                                 ]
                             
                             found_field = None
@@ -2637,7 +2644,8 @@ async def get_three_po_dashboard_data_new(
                                 }
                                 logger.info(f"   ✅ Found field '{found_field_path}' in {report_collection_name}, mapping to {aggregated_key}")
                             else:
-                                logger.warning(f"   ⚠️ Field '{collection_field}' not found in {report_collection_name} (tried: {field_variations})")
+                                logger.warning(f"   ⚠️ Field '{collection_field}' not found in {report_collection_name} (tried: {field_variations[:5]}...)")
+                                logger.warning(f"   ⚠️ Available fields sample: {list(available_fields)[:30]}")
                         
                         if len(formula_group_stage) > 1:  # More than just _id
                             # Aggregate by tender
