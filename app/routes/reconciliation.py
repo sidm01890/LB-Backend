@@ -2523,7 +2523,7 @@ async def get_three_po_dashboard_data_new(
                 
                 if formula_obj and "fields" in formula_obj:
                     logger.info(f"   📋 Processing formula: {logic_name_key} with {len(formula_obj.get('fields', []))} field(s)")
-                    for field in formula_doc.get("fields", []):
+                    for field in formula_obj.get("fields", []):
                         if field.get("type") == "data_field":
                             field_name = None
                             collection_field_name = None  # Actual field name in report collection
