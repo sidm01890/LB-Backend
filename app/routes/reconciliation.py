@@ -2723,6 +2723,26 @@ async def get_three_po_dashboard_data_new(
         final_pos_sales = total_pos_sales_from_tenders if tender_wise_data else response_fields.get("posSales", 0)
         final_three_po_sales = total_three_po_sales_from_tenders if tender_wise_data else response_fields.get("threePOSales", 0)
         
+        # Calculate allThreePOCharges and allPOSCharges from formula fields if available
+        # Sum all 3PO formula fields for allThreePOCharges
+        three_po_formula_sum = 0.0
+        pos_formula_sum = 0.0
+        
+        for key in formula_fields_to_aggregate.keys():
+            if key.startswith("3PO_"):
+                three_po_formula_sum += float(response_fields.get(key, 0) or 0)
+            elif key.startswith("POS_"):
+                pos_formula_sum += float(response_fields.get(key, 0) or 0)
+        
+        # Use formula sum if available, otherwise use existing calculation
+        if three_po_formula_sum > 0:
+            all_three_po_charges_total = three_po_formula_sum
+            logger.info(f"   ✅ Calculated allThreePOCharges from formula fields: {all_three_po_charges_total}")
+        
+        if pos_formula_sum > 0:
+            all_pos_charges_total = pos_formula_sum
+            logger.info(f"   ✅ Calculated allPOSCharges from formula fields: {all_pos_charges_total}")
+        
         # Prepare final response
         response = {
             "posSales": final_pos_sales,
@@ -2751,6 +2771,11 @@ async def get_three_po_dashboard_data_new(
             "tenderWisePOSData": tender_wise_data,
             "instoreTotal": final_pos_sales
         }
+        
+        # Add formula fields to top-level response for reference
+        for key in formula_fields_to_aggregate.keys():
+            if key in response_fields:
+                response[key] = float(response_fields.get(key, 0) or 0)
         
         logger.info("✅ API Request Completed Successfully")
         
