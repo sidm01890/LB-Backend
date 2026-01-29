@@ -2617,10 +2617,18 @@ async def get_three_po_dashboard_data_new(
                             # For Dataset fields, try nested and direct access
                             elif field_type == "Dataset" and table_name:
                                 # Try nested: table_name.field_name
+                                # Also try with suffixes (_zom, _pos) and plural forms
+                                base_field = collection_field.lower()
                                 field_variations = [
+                                    base_field,  # e.g., "packaging_charge"
+                                    f"{base_field}_zom",  # e.g., "packaging_charge_zom"
+                                    f"{base_field}_pos",  # e.g., "packaging_charge_pos"
+                                    f"{base_field}s",  # plural: "packaging_charges"
+                                    f"{base_field}s_zom",  # plural + suffix: "packaging_charges_zom"
+                                    f"{base_field}s_pos",  # plural + suffix: "packaging_charges_pos"
                                     f"{table_name}.{collection_field}",  # e.g., "zomato_bercos.packaging_charge"
-                                    collection_field,  # Direct: "packaging_charge"
-                                    collection_field.lower(),
+                                    f"{table_name}.{base_field}",  # lowercase nested
+                                    collection_field,  # Original case
                                     collection_field.upper(),
                                     collection_field.replace("_", "").lower(),
                                 ]
