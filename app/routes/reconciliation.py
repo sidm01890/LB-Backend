@@ -2616,18 +2616,45 @@ async def get_three_po_dashboard_data_new(
                             
                             # For Dataset fields, try nested and direct access
                             elif field_type == "Dataset" and table_name:
-                                # Try nested: table_name.field_name
-                                # Also try with suffixes (_zom, _pos) and plural forms
-                                base_field = collection_field.lower()
+                                # Field name mappings for fields with different names in MongoDB
+                                FIELD_NAME_MAPPINGS = {
+                                    "container_charges": "packaging_charges",
+                                    "outlet_discount": "discount",
+                                    "restaurant_discount_promo": "discount",
+                                    "restaurant_discount_bogo_freebies_gold_brand_pack_and_others": "discount"
+                                }
+                                
+                                # Get mapped field name if exists, otherwise use original
+                                mapped_field = FIELD_NAME_MAPPINGS.get(collection_field.lower(), collection_field.lower())
+                                base_field = mapped_field
+                                
+                                # Determine suffix based on table name
+                                suffix = ""
+                                if "pos_bercos" in table_name.lower() or "pos" in table_name.lower():
+                                    suffix = "_pos"
+                                elif "zomato_bercos" in table_name.lower() or "zomato" in table_name.lower():
+                                    suffix = "_zom"
+                                
+                                # Build field variations
                                 field_variations = [
-                                    base_field,  # e.g., "packaging_charge"
-                                    f"{base_field}_zom",  # e.g., "packaging_charge_zom"
-                                    f"{base_field}_pos",  # e.g., "packaging_charge_pos"
-                                    f"{base_field}s",  # plural: "packaging_charges"
-                                    f"{base_field}s_zom",  # plural + suffix: "packaging_charges_zom"
-                                    f"{base_field}s_pos",  # plural + suffix: "packaging_charges_pos"
+                                    # Try mapped name with suffix first (most likely match)
+                                    f"{base_field}{suffix}" if suffix else base_field,  # e.g., "packaging_charges_pos"
+                                    # Try mapped name variations
+                                    base_field,  # e.g., "packaging_charges"
+                                    f"{base_field}_zom",  # e.g., "packaging_charges_zom"
+                                    f"{base_field}_pos",  # e.g., "packaging_charges_pos"
+                                    f"{base_field}s",  # plural: "packaging_chargess"
+                                    f"{base_field}s_zom",  # plural + suffix
+                                    f"{base_field}s_pos",  # plural + suffix
+                                    # Try original field name variations
+                                    collection_field.lower(),  # Original lowercase
+                                    f"{collection_field.lower()}_zom",
+                                    f"{collection_field.lower()}_pos",
+                                    # Try nested paths
                                     f"{table_name}.{collection_field}",  # e.g., "zomato_bercos.packaging_charge"
-                                    f"{table_name}.{base_field}",  # lowercase nested
+                                    f"{table_name}.{base_field}",  # lowercase nested with mapped name
+                                    f"{table_name}.{mapped_field}",  # nested mapped name
+                                    # Try other variations
                                     collection_field,  # Original case
                                     collection_field.upper(),
                                     collection_field.replace("_", "").lower(),
