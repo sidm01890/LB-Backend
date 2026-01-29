@@ -2497,7 +2497,7 @@ async def get_three_po_dashboard_data_new(
         # Step 2.5: Fetch and aggregate formula fields from formulas collection
         logger.info("📊 Step 2.5: Fetching formula fields and aggregating them from report collections")
         formulas_collection = get_mongodb_collection("formulas")
-        formula_fields_to_aggregate = {}  # Store formula fields that need to be aggregated
+        formula_fields_to_aggregate = {}  # Store formula fields: {aggregated_key: actual_field_name_in_collection}
         
         if mongodb_service.collection_exists("formulas"):
             # Get formulas for 3PO_All_Charges and POS_All_Charges
@@ -2508,19 +2508,33 @@ async def get_three_po_dashboard_data_new(
                     for field in formula_doc.get("fields", []):
                         if field.get("type") == "data_field":
                             field_name = None
-                            if field.get("dataset_type") == "Formula":
-                                # Formula reference (e.g., SERVICE_FEE_ZOM)
-                                field_name = field.get("selectedFieldValue")
-                            elif field.get("dataset_type") == "Dataset":
-                                # Dataset field (e.g., packaging_charge)
-                                field_name = field.get("selectedTableColumn")
+                            collection_field_name = None  # Actual field name in report collection
                             
-                            if field_name:
-                                # Use logicNameKey as prefix to avoid conflicts
+                            if field.get("dataset_type") == "Formula":
+                                # Formula reference (e.g., SERVICE_FEE_ZOM) - use logicNameKey
+                                field_name = field.get("selectedFieldValue")
+                                # The actual field in report collection is the logicNameKey value
+                                collection_field_name = field_name  # e.g., "SERVICE_FEE_ZOM"
+                            elif field.get("dataset_type") == "Dataset":
+                                # Dataset field (e.g., packaging_charge from zomato_bercos)
+                                field_name = field.get("selectedTableColumn")
+                                table_name = field.get("selectedTableName")  # e.g., "zomato_bercos"
+                                # The actual field might be nested: zomato_bercos.packaging_charge
+                                # Or flattened: packaging_charge
+                                collection_field_name = field_name  # Try direct field name first
+                            
+                            if field_name and collection_field_name:
+                                # Use logicNameKey as prefix to avoid conflicts in response
                                 key_prefix = "3PO_" if "3PO" in logic_name_key else "POS_"
                                 aggregated_key = f"{key_prefix}{field_name}"
-                                formula_fields_to_aggregate[aggregated_key] = field_name
-                                logger.info(f"   ✅ Added formula field: {aggregated_key} -> {field_name}")
+                                # Store mapping: aggregated_key -> actual field name in collection
+                                formula_fields_to_aggregate[aggregated_key] = {
+                                    "collection_field": collection_field_name,
+                                    "original_name": field_name,
+                                    "table_name": field.get("selectedTableName"),
+                                    "field_type": field.get("dataset_type")
+                                }
+                                logger.info(f"   ✅ Added formula field: {aggregated_key} -> {collection_field_name} (from {field.get('dataset_type')})")
         
         # Aggregate formula fields from report collections (like bercos_summary_report)
         if formula_fields_to_aggregate:
@@ -2539,34 +2553,80 @@ async def get_three_po_dashboard_data_new(
                             continue
                         
                         available_fields = set(sample_doc.keys())
+                        logger.info(f"   📋 Sample document fields in {report_collection_name}: {list(available_fields)[:20]}...")
                         
                         # Build aggregation pipeline for formula fields
                         formula_group_stage = {"_id": "$tender_name"}
                         formula_total_group_stage = {"_id": None}
                         
-                        for aggregated_key, field_name in formula_fields_to_aggregate.items():
+                        for aggregated_key, field_info in formula_fields_to_aggregate.items():
+                            collection_field = field_info.get("collection_field")
+                            table_name = field_info.get("table_name")
+                            field_type = field_info.get("field_type")
+                            
                             # Try different field name variations to find the actual field in the collection
-                            field_variations = [
-                                field_name,
-                                field_name.lower(),
-                                field_name.upper(),
-                                field_name.replace("_", "").lower(),
-                            ]
+                            field_variations = []
+                            
+                            # For Formula references, try the logicNameKey directly
+                            if field_type == "Formula":
+                                field_variations = [
+                                    collection_field,  # e.g., "SERVICE_FEE_ZOM"
+                                    collection_field.upper(),  # e.g., "SERVICE_FEE_ZOM"
+                                    collection_field.lower(),  # e.g., "service_fee_zom"
+                                ]
+                            
+                            # For Dataset fields, try nested and direct access
+                            elif field_type == "Dataset" and table_name:
+                                # Try nested: table_name.field_name
+                                field_variations = [
+                                    f"{table_name}.{collection_field}",  # e.g., "zomato_bercos.packaging_charge"
+                                    collection_field,  # Direct: "packaging_charge"
+                                    collection_field.lower(),
+                                    collection_field.upper(),
+                                ]
+                            else:
+                                field_variations = [
+                                    collection_field,
+                                    collection_field.lower(),
+                                    collection_field.upper(),
+                                ]
                             
                             found_field = None
+                            found_field_path = None
+                            
                             for field_var in field_variations:
-                                if field_var in available_fields:
+                                # Check if it's a nested path
+                                if "." in field_var:
+                                    parts = field_var.split(".")
+                                    if len(parts) == 2 and parts[0] in available_fields:
+                                        # Check if nested object exists
+                                        nested_sample = sample_doc.get(parts[0], {})
+                                        if isinstance(nested_sample, dict) and parts[1] in nested_sample:
+                                            found_field = parts[1]
+                                            found_field_path = field_var
+                                            break
+                                elif field_var in available_fields:
                                     found_field = field_var
+                                    found_field_path = field_var
                                     break
                             
                             if found_field:
+                                # Build MongoDB field reference
+                                if "." in found_field_path:
+                                    # Nested field: use dot notation in $sum
+                                    field_ref = f"${found_field_path}"
+                                else:
+                                    field_ref = f"${found_field}"
+                                
                                 formula_group_stage[aggregated_key] = {
-                                    "$sum": {"$ifNull": [f"${found_field}", 0]}
+                                    "$sum": {"$ifNull": [field_ref, 0]}
                                 }
                                 formula_total_group_stage[aggregated_key] = {
-                                    "$sum": {"$ifNull": [f"${found_field}", 0]}
+                                    "$sum": {"$ifNull": [field_ref, 0]}
                                 }
-                                logger.info(f"   ✅ Found field '{found_field}' in {report_collection_name}, mapping to {aggregated_key}")
+                                logger.info(f"   ✅ Found field '{found_field_path}' in {report_collection_name}, mapping to {aggregated_key}")
+                            else:
+                                logger.warning(f"   ⚠️ Field '{collection_field}' not found in {report_collection_name} (tried: {field_variations})")
                         
                         if len(formula_group_stage) > 1:  # More than just _id
                             # Aggregate by tender
@@ -2590,6 +2650,7 @@ async def get_three_po_dashboard_data_new(
                             
                             formula_tender_results = list(report_collection.aggregate(formula_tender_pipeline))
                             logger.info(f"   ✅ Aggregated formula fields for {len(formula_tender_results)} tender(s)")
+                            logger.info(f"   📊 Formula fields found: {list(formula_group_stage.keys())}")
                             
                             # Add formula fields to tender_wise_data_dict
                             for result in formula_tender_results:
@@ -2675,10 +2736,15 @@ async def get_three_po_dashboard_data_new(
                 "totalReceipts": int(tender_data.get("totalReceipts", 0) or 0)
             }
             
-            # Add formula fields to tender_item
-            for key in formula_fields_to_aggregate.keys():
-                if key in tender_data:
-                    tender_item[key] = float(tender_data.get(key, 0) or 0)
+            # Add formula fields to tender_item (these are the individual dependencies)
+            for aggregated_key in formula_fields_to_aggregate.keys():
+                if aggregated_key in tender_data:
+                    tender_item[aggregated_key] = float(tender_data.get(aggregated_key, 0) or 0)
+                    logger.info(f"   ✅ Added formula field {aggregated_key} = {tender_item[aggregated_key]} to tender {tender_name}")
+                else:
+                    # Set to 0 if not found (so it's always in the response)
+                    tender_item[aggregated_key] = 0.0
+                    logger.debug(f"   ⚠️ Formula field {aggregated_key} not found in tender_data for {tender_name}, setting to 0")
             
             tender_wise_data.append(tender_item)
             logger.info(f"   📋 Tender: {tender_name}, POS Sales: {tender_item['posSales']}, 3PO Sales: {tender_item['threePOSales']}")
