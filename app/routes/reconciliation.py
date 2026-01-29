@@ -2301,6 +2301,7 @@ async def get_three_po_dashboard_data_new(
             "threePODiscounts": 0,
             "threePOFreebies": 0,
             "reconciled": 0,
+            "unreconciled": 0,
             "receivablesVsReceipts": 0.0,
             "posVsThreePO": 0.0,
             "booked": 0,
@@ -2342,6 +2343,25 @@ async def get_three_po_dashboard_data_new(
                 # Get the report collection
                 report_collection = mongodb_service.db[collection_name_lower]
                 
+                # Detect reconciliation_status field name from sample document
+                reconciliation_status_field = None
+                sample_doc = report_collection.find_one({})
+                if sample_doc:
+                    # Try common field name variations
+                    status_field_variations = [
+                        "reconciliation_status",
+                        "reconciled_status", 
+                        "status",
+                        "reconc_status",
+                        "reconciliationStatus",
+                        "reconciledStatus"
+                    ]
+                    for field_name in status_field_variations:
+                        if field_name in sample_doc:
+                            reconciliation_status_field = field_name
+                            logger.info(f"   ✅ Detected reconciliation status field: '{reconciliation_status_field}'")
+                            break
+                
                 # Build dynamic aggregation pipeline based on mapping_keys
                 # First, build the $group stage dynamically
                 group_stage = {"_id": "$tender_name"}  # Group by tender_name for tender-wise data
@@ -2358,6 +2378,8 @@ async def get_three_po_dashboard_data_new(
                     
                     three_po_key = mapping.get("3po_key")
                     collection_key = mapping.get("collection_key")
+                    status_field = mapping.get("status_field")  # Optional: explicit status field from config
+                    status_value = mapping.get("status_value")  # Optional: explicit status value from config
                     
                     if not three_po_key or not collection_key:
                         logger.warning(f"⚠️ Invalid mapping: {mapping}, skipping")
@@ -2370,15 +2392,72 @@ async def get_three_po_dashboard_data_new(
                     # In MongoDB aggregation, field references are strings like "$field_name"
                     field_ref = f"${collection_key}"
                     
-                    # Add to group stage for tender-wise aggregation
-                    group_stage[three_po_key] = {
-                        "$sum": {"$ifNull": [field_ref, 0]}
-                    }
+                    # Check if this is a reconciled/unreconciled field that needs conditional aggregation
+                    is_reconciled_field = three_po_key.lower() == "reconciled"
+                    is_unreconciled_field = three_po_key.lower() == "unreconciled"
                     
-                    # Add to total group stage for top-level totals
-                    total_group_stage[three_po_key] = {
-                        "$sum": {"$ifNull": [field_ref, 0]}
-                    }
+                    # Determine which status field to use (explicit from config, or auto-detected)
+                    effective_status_field = status_field or reconciliation_status_field
+                    
+                    if (is_reconciled_field or is_unreconciled_field) and effective_status_field:
+                        # Use conditional aggregation based on reconciliation_status
+                        # Determine the expected status value
+                        if is_reconciled_field:
+                            expected_status = status_value or "RECONCILED"
+                        else:  # is_unreconciled_field
+                            expected_status = status_value or "UNRECONCILED"
+                        
+                        # Build conditional aggregation with case-insensitive matching
+                        # Use $toUpper for case-insensitive comparison
+                        # MongoDB field reference needs to be an object, not a string
+                        status_field_ref_obj = f"${effective_status_field}"
+                        conditional_sum = {
+                            "$sum": {
+                                "$cond": [
+                                    {
+                                        "$eq": [
+                                            {
+                                                "$toUpper": {
+                                                    "$ifNull": [status_field_ref_obj, ""]
+                                                }
+                                            },
+                                            expected_status.upper()
+                                        ]
+                                    },
+                                    {"$ifNull": [field_ref, 0]},
+                                    0
+                                ]
+                            }
+                        }
+                        
+                        # Add to group stage for tender-wise aggregation
+                        group_stage[three_po_key] = conditional_sum
+                        
+                        # Add to total group stage for top-level totals
+                        total_group_stage[three_po_key] = conditional_sum
+                        
+                        logger.info(f"   ✅ Using conditional aggregation for '{three_po_key}': summing '{collection_key}' where '{effective_status_field}' = '{expected_status}'")
+                    elif (is_reconciled_field or is_unreconciled_field) and not effective_status_field:
+                        # Warn if reconciled/unreconciled mapping exists but no status field found
+                        logger.warning(f"   ⚠️ '{three_po_key}' mapping found but no reconciliation_status field detected. Using simple sum (may not be accurate).")
+                        # Fall back to simple aggregation
+                        group_stage[three_po_key] = {
+                            "$sum": {"$ifNull": [field_ref, 0]}
+                        }
+                        total_group_stage[three_po_key] = {
+                            "$sum": {"$ifNull": [field_ref, 0]}
+                        }
+                    else:
+                        # Normal aggregation (no conditional filtering)
+                        # Add to group stage for tender-wise aggregation
+                        group_stage[three_po_key] = {
+                            "$sum": {"$ifNull": [field_ref, 0]}
+                        }
+                        
+                        # Add to total group stage for top-level totals
+                        total_group_stage[three_po_key] = {
+                            "$sum": {"$ifNull": [field_ref, 0]}
+                        }
                 
                 if not fields_to_aggregate:
                     logger.warning(f"⚠️ No valid mappings found for collection '{collection_name}', skipping")
@@ -2469,7 +2548,7 @@ async def get_three_po_dashboard_data_new(
                             if three_po_key in tender_wise_data_dict[tender_name]:
                                 # Convert to appropriate type
                                 if three_po_key in ["posDiscounts", "posFreebies", "threePODiscounts", "threePOFreebies", 
-                                                   "reconciled", "booked", "promo", "deltaPromo", "totalReceipts"]:
+                                                   "reconciled", "unreconciled", "booked", "promo", "deltaPromo", "totalReceipts"]:
                                     tender_wise_data_dict[tender_name][three_po_key] += int(value or 0)
                                 else:
                                     tender_wise_data_dict[tender_name][three_po_key] += float(value or 0)
@@ -2485,7 +2564,7 @@ async def get_three_po_dashboard_data_new(
                         if three_po_key != "_id" and three_po_key in response_fields:
                             # Convert to appropriate type
                             if three_po_key in ["posDiscounts", "posFreebies", "threePODiscounts", "threePOFreebies", 
-                                               "reconciled", "booked", "promo", "deltaPromo", "totalReceipts"]:
+                                               "reconciled", "unreconciled", "booked", "promo", "deltaPromo", "totalReceipts"]:
                                 response_fields[three_po_key] += int(value or 0)
                             else:
                                 response_fields[three_po_key] += float(value or 0)
@@ -2820,6 +2899,7 @@ async def get_three_po_dashboard_data_new(
                 "threePODiscounts": int(tender_data.get("threePODiscounts", 0) or 0),
                 "threePOFreebies": int(tender_data.get("threePOFreebies", 0) or 0),
                 "reconciled": int(tender_data.get("reconciled", 0) or 0),
+                "unreconciled": int(tender_data.get("unreconciled", 0) or 0),
                 "receivablesVsReceipts": float(tender_data.get("receivablesVsReceipts", 0) or 0),
                 "posVsThreePO": float(tender_data.get("posVsThreePO", 0) or 0),
                 "booked": int(tender_data.get("booked", 0) or 0),
@@ -2920,6 +3000,7 @@ async def get_three_po_dashboard_data_new(
             "threePODiscounts": response_fields.get("threePODiscounts", 0),
             "threePOFreebies": response_fields.get("threePOFreebies", 0),
             "reconciled": response_fields.get("reconciled", 0),
+            "unreconciled": response_fields.get("unreconciled", 0),
             "receivablesVsReceipts": response_fields.get("receivablesVsReceipts", 0.0),
             "posVsThreePO": response_fields.get("posVsThreePO", 0.0),
             "booked": response_fields.get("booked", 0),
