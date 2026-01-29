@@ -2496,10 +2496,14 @@ async def get_three_po_dashboard_data_new(
         
         # Step 2.5: Fetch and aggregate formula fields from formulas collection
         logger.info("📊 Step 2.5: Fetching formula fields and aggregating them from report collections")
+        logger.info("📊 Step 2.5: Starting formula field aggregation process...")
         formulas_collection = get_mongodb_collection("formulas")
         formula_fields_to_aggregate = {}  # Store formula fields: {aggregated_key: actual_field_name_in_collection}
         
-        if mongodb_service.collection_exists("formulas"):
+        formulas_collection_exists = mongodb_service.collection_exists("formulas")
+        logger.info(f"📊 Step 2.5: Formulas collection exists: {formulas_collection_exists}")
+        
+        if formulas_collection_exists:
             # Formulas are stored as report-level documents, each with a 'formulas' array
             # We need to search through all reports and find formulas with matching logicNameKey
             all_report_docs = list(formulas_collection.find({}))
