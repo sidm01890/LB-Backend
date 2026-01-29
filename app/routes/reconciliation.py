@@ -2633,9 +2633,17 @@ async def get_three_po_dashboard_data_new(
                                     collection_field.replace("_", "").lower(),
                                 ]
                             else:
+                                # Default: try lowercase first (MongoDB format)
+                                # Also try with suffixes and plural forms
+                                base_field = collection_field.lower()
                                 field_variations = [
-                                    collection_field,
-                                    collection_field.lower(),
+                                    base_field,  # MongoDB format
+                                    f"{base_field}_zom",  # with _zom suffix
+                                    f"{base_field}_pos",  # with _pos suffix
+                                    f"{base_field}s",  # plural form
+                                    f"{base_field}s_zom",  # plural + _zom
+                                    f"{base_field}s_pos",  # plural + _pos
+                                    collection_field,  # Original case
                                     collection_field.upper(),
                                     collection_field.replace("_", "").lower(),
                                 ]
