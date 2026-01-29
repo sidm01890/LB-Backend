@@ -2511,10 +2511,18 @@ async def get_three_po_dashboard_data_new(
                             collection_field_name = None  # Actual field name in report collection
                             
                             if field.get("dataset_type") == "Formula":
-                                # Formula reference (e.g., SERVICE_FEE_ZOM) - use logicNameKey
-                                field_name = field.get("selectedFieldValue")
-                                # The actual field in report collection is the logicNameKey value
-                                collection_field_name = field_name  # e.g., "SERVICE_FEE_ZOM"
+                                # Formula reference (e.g., selectedFieldValue = "SERVICE_FEE_ZOM")
+                                # This is the logicNameKey of the referenced formula
+                                referenced_logic_name_key = field.get("selectedFieldValue")
+                                field_name = referenced_logic_name_key
+                                
+                                # For Formula references, the field in report collection is the logicNameKey itself
+                                # But we need to check if there's a formula with this logicNameKey to get the actual field
+                                # Actually, the logicNameKey IS the field name in the report collection
+                                collection_field_name = referenced_logic_name_key  # e.g., "SERVICE_FEE_ZOM"
+                                
+                                logger.info(f"   🔍 Formula reference: {referenced_logic_name_key}")
+                                
                             elif field.get("dataset_type") == "Dataset":
                                 # Dataset field (e.g., packaging_charge from zomato_bercos)
                                 field_name = field.get("selectedTableColumn")
@@ -2522,6 +2530,8 @@ async def get_three_po_dashboard_data_new(
                                 # The actual field might be nested: zomato_bercos.packaging_charge
                                 # Or flattened: packaging_charge
                                 collection_field_name = field_name  # Try direct field name first
+                                
+                                logger.info(f"   🔍 Dataset field: {table_name}.{field_name}")
                             
                             if field_name and collection_field_name:
                                 # Use logicNameKey as prefix to avoid conflicts in response
@@ -2532,7 +2542,8 @@ async def get_three_po_dashboard_data_new(
                                     "collection_field": collection_field_name,
                                     "original_name": field_name,
                                     "table_name": field.get("selectedTableName"),
-                                    "field_type": field.get("dataset_type")
+                                    "field_type": field.get("dataset_type"),
+                                    "referenced_logic_name_key": field.get("selectedFieldValue") if field.get("dataset_type") == "Formula" else None
                                 }
                                 logger.info(f"   ✅ Added formula field: {aggregated_key} -> {collection_field_name} (from {field.get('dataset_type')})")
         
