@@ -2604,11 +2604,12 @@ async def get_three_po_dashboard_data_new(
                             # For Formula references, try the logicNameKey directly and variations
                             if field_type == "Formula":
                                 # The collection_field is the logicNameKey (e.g., "SERVICE_FEE_ZOM")
-                                # Try exact match, uppercase, lowercase, and also check if it's stored as a nested object
+                                # MongoDB stores fields in lowercase (e.g., "service_fee_zom")
+                                # Try lowercase first since that's what MongoDB uses
                                 field_variations = [
-                                    collection_field,  # e.g., "SERVICE_FEE_ZOM"
+                                    collection_field.lower(),  # e.g., "service_fee_zom" (MongoDB format)
+                                    collection_field,  # e.g., "SERVICE_FEE_ZOM" (original)
                                     collection_field.upper(),  # e.g., "SERVICE_FEE_ZOM"
-                                    collection_field.lower(),  # e.g., "service_fee_zom"
                                     collection_field.replace("_", "").lower(),  # e.g., "servicefeezom"
                                     collection_field.replace("_", "").upper(),  # e.g., "SERVICEFEEZOM"
                                 ]
