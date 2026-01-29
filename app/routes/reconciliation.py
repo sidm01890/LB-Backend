@@ -2385,13 +2385,25 @@ async def get_three_po_dashboard_data_new(
                     continue
                 
                 # Build aggregation pipeline for tender-wise data
+                # Match documents where either order_date OR date is in range
+                # This handles POS-only documents that have 'date' but not 'order_date'
                 tender_pipeline = [
                     {
                         "$match": {
-                            "order_date": {
-                                "$gte": start_datetime,
-                                "$lte": end_datetime
-                            }
+                            "$or": [
+                                {
+                                    "order_date": {
+                                        "$gte": start_datetime,
+                                        "$lte": end_datetime
+                                    }
+                                },
+                                {
+                                    "date": {
+                                        "$gte": start_datetime,
+                                        "$lte": end_datetime
+                                    }
+                                }
+                            ]
                         }
                     },
                     {
@@ -2406,13 +2418,25 @@ async def get_three_po_dashboard_data_new(
                 ]
                 
                 # Build aggregation pipeline for totals
+                # Match documents where either order_date OR date is in range
+                # This handles POS-only documents that have 'date' but not 'order_date'
                 total_pipeline = [
                     {
                         "$match": {
-                            "order_date": {
-                                "$gte": start_datetime,
-                                "$lte": end_datetime
-                            }
+                            "$or": [
+                                {
+                                    "order_date": {
+                                        "$gte": start_datetime,
+                                        "$lte": end_datetime
+                                    }
+                                },
+                                {
+                                    "date": {
+                                        "$gte": start_datetime,
+                                        "$lte": end_datetime
+                                    }
+                                }
+                            ]
                         }
                     },
                     {
@@ -2470,6 +2494,123 @@ async def get_three_po_dashboard_data_new(
                 logger.error(f"❌ Error processing collection '{collection_name_lower}': {e}", exc_info=True)
                 continue
         
+        # Step 2.5: Fetch and aggregate formula fields from formulas collection
+        logger.info("📊 Step 2.5: Fetching formula fields and aggregating them from report collections")
+        formulas_collection = get_mongodb_collection("formulas")
+        formula_fields_to_aggregate = {}  # Store formula fields that need to be aggregated
+        
+        if mongodb_service.collection_exists("formulas"):
+            # Get formulas for 3PO_All_Charges and POS_All_Charges
+            for logic_name_key in ["3PO_ALL_CHARGES_", "POS_ALL_CHARGES"]:
+                formula_doc = formulas_collection.find_one({"logicNameKey": logic_name_key})
+                if formula_doc and "fields" in formula_doc:
+                    logger.info(f"   📋 Found formula: {logic_name_key}")
+                    for field in formula_doc.get("fields", []):
+                        if field.get("type") == "data_field":
+                            field_name = None
+                            if field.get("dataset_type") == "Formula":
+                                # Formula reference (e.g., SERVICE_FEE_ZOM)
+                                field_name = field.get("selectedFieldValue")
+                            elif field.get("dataset_type") == "Dataset":
+                                # Dataset field (e.g., packaging_charge)
+                                field_name = field.get("selectedTableColumn")
+                            
+                            if field_name:
+                                # Use logicNameKey as prefix to avoid conflicts
+                                key_prefix = "3PO_" if "3PO" in logic_name_key else "POS_"
+                                aggregated_key = f"{key_prefix}{field_name}"
+                                formula_fields_to_aggregate[aggregated_key] = field_name
+                                logger.info(f"   ✅ Added formula field: {aggregated_key} -> {field_name}")
+        
+        # Aggregate formula fields from report collections (like bercos_summary_report)
+        if formula_fields_to_aggregate:
+            logger.info(f"   📊 Aggregating {len(formula_fields_to_aggregate)} formula fields from report collections")
+            report_collections_to_check = ["bercos_summary_report"]
+            
+            for report_collection_name in report_collections_to_check:
+                if mongodb_service.collection_exists(report_collection_name):
+                    try:
+                        report_collection = mongodb_service.db[report_collection_name]
+                        
+                        # Check what fields exist in the collection by sampling a document
+                        sample_doc = report_collection.find_one({})
+                        if not sample_doc:
+                            logger.warning(f"   ⚠️ No documents found in {report_collection_name}")
+                            continue
+                        
+                        available_fields = set(sample_doc.keys())
+                        
+                        # Build aggregation pipeline for formula fields
+                        formula_group_stage = {"_id": "$tender_name"}
+                        formula_total_group_stage = {"_id": None}
+                        
+                        for aggregated_key, field_name in formula_fields_to_aggregate.items():
+                            # Try different field name variations to find the actual field in the collection
+                            field_variations = [
+                                field_name,
+                                field_name.lower(),
+                                field_name.upper(),
+                                field_name.replace("_", "").lower(),
+                            ]
+                            
+                            found_field = None
+                            for field_var in field_variations:
+                                if field_var in available_fields:
+                                    found_field = field_var
+                                    break
+                            
+                            if found_field:
+                                formula_group_stage[aggregated_key] = {
+                                    "$sum": {"$ifNull": [f"${found_field}", 0]}
+                                }
+                                formula_total_group_stage[aggregated_key] = {
+                                    "$sum": {"$ifNull": [f"${found_field}", 0]}
+                                }
+                                logger.info(f"   ✅ Found field '{found_field}' in {report_collection_name}, mapping to {aggregated_key}")
+                        
+                        if len(formula_group_stage) > 1:  # More than just _id
+                            # Aggregate by tender
+                            formula_tender_pipeline = [
+                                {
+                                    "$match": {
+                                        "$or": [
+                                            {"order_date": {"$gte": start_datetime, "$lte": end_datetime}},
+                                            {"date": {"$gte": start_datetime, "$lte": end_datetime}}
+                                        ]
+                                    }
+                                },
+                                {"$group": formula_group_stage},
+                                {
+                                    "$project": {
+                                        "tenderName": "$_id",
+                                        **{key: 1 for key in formula_fields_to_aggregate.keys() if key in formula_group_stage}
+                                    }
+                                }
+                            ]
+                            
+                            formula_tender_results = list(report_collection.aggregate(formula_tender_pipeline))
+                            logger.info(f"   ✅ Aggregated formula fields for {len(formula_tender_results)} tender(s)")
+                            
+                            # Add formula fields to tender_wise_data_dict
+                            for result in formula_tender_results:
+                                tender_name = result.get("tenderName") or result.get("_id") or "ZOMATO"
+                                if tender_name not in tender_wise_data_dict:
+                                    tender_wise_data_dict[tender_name] = {key: 0 for key in response_fields.keys()}
+                                    tender_wise_data_dict[tender_name]["tenderName"] = tender_name
+                                
+                                for key, value in result.items():
+                                    if key != "tenderName" and key != "_id":
+                                        if key not in tender_wise_data_dict[tender_name]:
+                                            tender_wise_data_dict[tender_name][key] = 0.0
+                                        tender_wise_data_dict[tender_name][key] += float(value or 0)
+                                        
+                                        # Also add to response_fields for totals
+                                        if key not in response_fields:
+                                            response_fields[key] = 0.0
+                                        response_fields[key] += float(value or 0)
+                    except Exception as e:
+                        logger.error(f"   ❌ Error aggregating formula fields from {report_collection_name}: {e}", exc_info=True)
+        
         # Step 3: Convert tender_wise_data_dict to list and calculate computed fields
         logger.info("📊 Step 3: Processing tender-wise data and calculating computed fields")
         tender_wise_data = []
@@ -2507,6 +2648,7 @@ async def get_three_po_dashboard_data_new(
                 )
                 logger.info(f"   📊 Calculated allPOSCharges for {tender_name}: {all_pos_charges}")
             
+            # Build tender_item with all fields including formula fields
             tender_item = {
                 "tenderName": tender_name,
                 "posSales": float(tender_data.get("posSales", 0) or 0),
@@ -2532,6 +2674,12 @@ async def get_three_po_dashboard_data_new(
                 "totalReceivables": float(tender_data.get("totalReceivables", 0) or 0),
                 "totalReceipts": int(tender_data.get("totalReceipts", 0) or 0)
             }
+            
+            # Add formula fields to tender_item
+            for key in formula_fields_to_aggregate.keys():
+                if key in tender_data:
+                    tender_item[key] = float(tender_data.get(key, 0) or 0)
+            
             tender_wise_data.append(tender_item)
             logger.info(f"   📋 Tender: {tender_name}, POS Sales: {tender_item['posSales']}, 3PO Sales: {tender_item['threePOSales']}")
         
