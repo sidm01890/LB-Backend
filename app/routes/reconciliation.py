@@ -2621,11 +2621,21 @@ async def get_three_po_dashboard_data_new(
                                     "container_charges": "packaging_charges",
                                     "outlet_discount": "discount",
                                     "restaurant_discount_promo": "discount",
-                                    "restaurant_discount_bogo_freebies_gold_brand_pack_and_others": "discount"
+                                    # Map bogo_freebies to None to set it to 0 (it doesn't exist as separate field)
+                                    "restaurant_discount_bogo_freebies_gold_brand_pack_and_others": None
                                 }
                                 
                                 # Get mapped field name if exists, otherwise use original
                                 mapped_field = FIELD_NAME_MAPPINGS.get(collection_field.lower(), collection_field.lower())
+                                
+                                # If mapped_field is None, this field doesn't exist in MongoDB (set to 0)
+                                if mapped_field is None:
+                                    logger.info(f"   ⚠️ Field '{collection_field}' mapped to None - will be set to 0")
+                                    # Set to 0 in aggregation stages
+                                    formula_group_stage[aggregated_key] = {"$sum": 0}
+                                    formula_total_group_stage[aggregated_key] = {"$sum": 0}
+                                    continue  # Skip field lookup for this field
+                                
                                 base_field = mapped_field
                                 
                                 # Determine suffix based on table name
