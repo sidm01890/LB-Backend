@@ -2500,11 +2500,29 @@ async def get_three_po_dashboard_data_new(
         formula_fields_to_aggregate = {}  # Store formula fields: {aggregated_key: actual_field_name_in_collection}
         
         if mongodb_service.collection_exists("formulas"):
+            # Formulas are stored as report-level documents, each with a 'formulas' array
+            # We need to search through all reports and find formulas with matching logicNameKey
+            all_report_docs = list(formulas_collection.find({}))
+            logger.info(f"   📋 Found {len(all_report_docs)} report document(s) in formulas collection")
+            
             # Get formulas for 3PO_All_Charges and POS_All_Charges
             for logic_name_key in ["3PO_ALL_CHARGES_", "POS_ALL_CHARGES"]:
-                formula_doc = formulas_collection.find_one({"logicNameKey": logic_name_key})
-                if formula_doc and "fields" in formula_doc:
-                    logger.info(f"   📋 Found formula: {logic_name_key}")
+                formula_obj = None
+                
+                # Search through all report documents
+                for report_doc in all_report_docs:
+                    if "formulas" in report_doc and isinstance(report_doc["formulas"], list):
+                        # Search in the formulas array
+                        for formula in report_doc["formulas"]:
+                            if formula.get("logicNameKey") == logic_name_key:
+                                formula_obj = formula
+                                logger.info(f"   📋 Found formula: {logic_name_key} in report: {report_doc.get('report_name', 'N/A')}")
+                                break
+                        if formula_obj:
+                            break
+                
+                if formula_obj and "fields" in formula_obj:
+                    logger.info(f"   📋 Processing formula: {logic_name_key} with {len(formula_obj.get('fields', []))} field(s)")
                     for field in formula_doc.get("fields", []):
                         if field.get("type") == "data_field":
                             field_name = None
