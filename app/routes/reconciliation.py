@@ -2737,6 +2737,7 @@ async def get_three_po_dashboard_data_new(
             }
             
             # Add formula fields to tender_item (these are the individual dependencies)
+            # These fields represent the sum of each individual formula dependency
             for aggregated_key in formula_fields_to_aggregate.keys():
                 if aggregated_key in tender_data:
                     tender_item[aggregated_key] = float(tender_data.get(aggregated_key, 0) or 0)
@@ -2838,10 +2839,15 @@ async def get_three_po_dashboard_data_new(
             "instoreTotal": final_pos_sales
         }
         
-        # Add formula fields to top-level response for reference
-        for key in formula_fields_to_aggregate.keys():
-            if key in response_fields:
-                response[key] = float(response_fields.get(key, 0) or 0)
+        # Add formula fields to top-level response (these are the individual dependencies)
+        for aggregated_key in formula_fields_to_aggregate.keys():
+            if aggregated_key in response_fields:
+                response[aggregated_key] = float(response_fields.get(aggregated_key, 0) or 0)
+                logger.info(f"   ✅ Added formula field {aggregated_key} = {response[aggregated_key]} to top-level response")
+            else:
+                # Set to 0 if not found (so it's always in the response)
+                response[aggregated_key] = 0.0
+                logger.debug(f"   ⚠️ Formula field {aggregated_key} not found in response_fields, setting to 0")
         
         logger.info("✅ API Request Completed Successfully")
         
